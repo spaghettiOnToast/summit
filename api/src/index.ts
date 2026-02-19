@@ -188,6 +188,149 @@ app.get("/beasts/all", async (c) => {
 });
 
 /**
+ * GET /beasts/token/:token_id - Get a single beast's Summit stats by token ID
+ * Queries beast_stats directly — does not require the beasts metadata table.
+ * BeastDex already has metadata (name, tier, etc.) from its own data sources.
+ */
+app.get("/beasts/token/:token_id", async (c) => {
+  const tokenId = parseInt(c.req.param("token_id"), 10);
+
+  if (isNaN(tokenId) || tokenId <= 0) {
+    return c.json({ error: "Invalid token_id" }, 400);
+  }
+
+  // Query from beast_stats (populated by game events) with optional joins
+  const results = await db
+    .select({
+      token_id: beast_stats.token_id,
+      current_health: beast_stats.current_health,
+      bonus_health: beast_stats.bonus_health,
+      bonus_xp: beast_stats.bonus_xp,
+      attack_streak: beast_stats.attack_streak,
+      last_death_timestamp: beast_stats.last_death_timestamp,
+      revival_count: beast_stats.revival_count,
+      extra_lives: beast_stats.extra_lives,
+      captured_summit: beast_stats.captured_summit,
+      used_revival_potion: beast_stats.used_revival_potion,
+      used_attack_potion: beast_stats.used_attack_potion,
+      max_attack_streak: beast_stats.max_attack_streak,
+      summit_held_seconds: beast_stats.summit_held_seconds,
+      spirit: beast_stats.spirit,
+      luck: beast_stats.luck,
+      specials: beast_stats.specials,
+      wisdom: beast_stats.wisdom,
+      diplomacy: beast_stats.diplomacy,
+      rewards_earned: beast_stats.rewards_earned,
+      rewards_claimed: beast_stats.rewards_claimed,
+      // Optional joins — may be null if beasts table isn't populated
+      beast_id: beasts.beast_id,
+      prefix: beasts.prefix,
+      suffix: beasts.suffix,
+      level: beasts.level,
+      health: beasts.health,
+      shiny: beasts.shiny,
+      animated: beasts.animated,
+      owner: beast_owners.owner,
+      skulls: skulls_claimed.skulls,
+      quest_rewards_amount: quest_rewards_claimed.amount,
+      adventurers_killed: beast_data.adventurers_killed,
+      last_death_loot_survivor: beast_data.last_death_timestamp,
+      last_killed_by: beast_data.last_killed_by,
+      entity_hash: beast_data.entity_hash,
+    })
+    .from(beast_stats)
+    .leftJoin(beasts, eq(beasts.token_id, beast_stats.token_id))
+    .leftJoin(beast_owners, eq(beast_owners.token_id, beast_stats.token_id))
+    .leftJoin(beast_data, eq(beast_data.token_id, beast_stats.token_id))
+    .leftJoin(skulls_claimed, eq(skulls_claimed.beast_token_id, beast_stats.token_id))
+    .leftJoin(quest_rewards_claimed, eq(quest_rewards_claimed.beast_token_id, beast_stats.token_id))
+    .where(eq(beast_stats.token_id, tokenId));
+
+  if (results.length === 0) {
+    return c.json({ error: "Beast not found" }, 404);
+  }
+
+  const r = results[0];
+  const beastId = r.beast_id ?? 0;
+  const prefixId = r.prefix ?? 0;
+  const suffixId = r.suffix ?? 0;
+  const tier = beastId > 0 ? (BEAST_TIERS[beastId] ?? 5) : 5;
+  const spirit = r.spirit ?? 0;
+  const bonusXp = r.bonus_xp ?? 0;
+  const bonusHealth = r.bonus_health ?? 0;
+  const baseLevel = r.level ?? 0;
+  const baseHealth = r.health ?? 0;
+  const currentLevel = baseLevel > 0 ? getBeastCurrentLevel(baseLevel, bonusXp) : 0;
+  const revivalTime = getBeastRevivalTime(spirit);
+  const lastDeathTimestamp = Number(r.last_death_timestamp ?? 0n);
+
+  let currentHealth = r.current_health ?? 0;
+  if (baseHealth > 0 && (currentHealth === 0 && lastDeathTimestamp === 0)) {
+    currentHealth = baseHealth + bonusHealth;
+  } else if (baseHealth > 0 && currentHealth === 0 && lastDeathTimestamp * 1000 + revivalTime < Date.now()) {
+    currentHealth = baseHealth + bonusHealth;
+  }
+
+  // Compute summit rank (position by summit_held_seconds)
+  let summitRank: number | null = null;
+  if (r.summit_held_seconds != null && r.summit_held_seconds > 0) {
+    const rankResult = await db
+      .select({ rank: sql<number>`count(*) + 1` })
+      .from(beast_stats)
+      .where(
+        sql`${beast_stats.summit_held_seconds} > (SELECT coalesce(${beast_stats.summit_held_seconds}, 0) FROM ${beast_stats} WHERE ${beast_stats.token_id} = ${tokenId})`
+      );
+    summitRank = Number(rankResult[0]?.rank ?? null);
+  }
+
+  return c.json({
+    id: beastId,
+    token_id: r.token_id,
+    name: beastId > 0 ? (BEAST_NAMES[beastId] ?? "Unknown") : "Unknown",
+    prefix: prefixId > 0 ? (ITEM_NAME_PREFIXES[prefixId] ?? "") : "",
+    suffix: suffixId > 0 ? (ITEM_NAME_SUFFIXES[suffixId] ?? "") : "",
+    tier,
+    type: beastId > 0 ? (BEAST_TYPES[beastId] ?? "Unknown") : "Unknown",
+    power: beastId > 0 ? (6 - tier) * currentLevel : 0,
+    level: baseLevel,
+    health: baseHealth,
+    shiny: r.shiny ?? 0,
+    animated: r.animated ?? 0,
+    current_level: currentLevel,
+    current_health: currentHealth,
+    revival_time: revivalTime,
+    bonus_health: bonusHealth,
+    bonus_xp: bonusXp,
+    attack_streak: r.attack_streak ?? 0,
+    last_death_timestamp: lastDeathTimestamp,
+    revival_count: r.revival_count ?? 0,
+    extra_lives: r.extra_lives ?? 0,
+    captured_summit: r.captured_summit ?? false,
+    used_revival_potion: r.used_revival_potion ?? false,
+    used_attack_potion: r.used_attack_potion ?? false,
+    max_attack_streak: r.max_attack_streak ?? false,
+    summit_held_seconds: r.summit_held_seconds ?? 0,
+    spirit,
+    luck: r.luck ?? 0,
+    specials: r.specials ?? false,
+    wisdom: r.wisdom ?? false,
+    diplomacy: r.diplomacy ?? false,
+    rewards_earned: r.rewards_earned ?? 0,
+    rewards_claimed: r.rewards_claimed ?? 0,
+    kills_claimed: Number(r.skulls ?? 0n),
+    quest_rewards_claimed: r.quest_rewards_amount ?? 0,
+    adventurers_killed: Number(r.adventurers_killed ?? 0n),
+    last_dm_death_timestamp: Number(r.last_death_loot_survivor ?? 0n),
+    last_killed_by: Number(r.last_killed_by ?? 0n),
+    entity_hash: r.entity_hash ?? undefined,
+    owner: r.owner ?? null,
+    summit_rank: summitRank,
+    prefix_id: prefixId,
+    suffix_id: suffixId,
+  });
+});
+
+/**
  * GET /beasts/:owner - Get all beasts for an owner with stats and data joined
  * Returns data in Beast interface format compatible with getBeastCollection
  */
@@ -243,6 +386,20 @@ app.get("/beasts/:owner", async (c) => {
     .leftJoin(skulls_claimed, eq(skulls_claimed.beast_token_id, beast_owners.token_id))
     .leftJoin(quest_rewards_claimed, eq(quest_rewards_claimed.beast_token_id, beast_owners.token_id))
     .where(eq(beast_owners.owner, owner));
+
+  // Compute summit ranks for all beasts in one query using window function
+  const rankResults = await db
+    .select({
+      token_id: beast_stats.token_id,
+      rank: sql<number>`RANK() OVER (ORDER BY ${beast_stats.summit_held_seconds} DESC)`,
+    })
+    .from(beast_stats)
+    .where(sql`${beast_stats.summit_held_seconds} > 0`);
+
+  const summitRankMap = new Map<number, number>();
+  rankResults.forEach((r) => {
+    summitRankMap.set(r.token_id, Number(r.rank));
+  });
 
   // Transform to Beast interface format
   return c.json(
@@ -323,6 +480,11 @@ app.get("/beasts/:owner", async (c) => {
 
         // Hash from beast_data (if linked)
         entity_hash: r.entity_hash ?? undefined,
+
+        // Rank & IDs
+        summit_rank: summitRankMap.get(r.token_id) ?? null,
+        prefix_id: prefixId,
+        suffix_id: suffixId,
       };
     })
   );
@@ -669,6 +831,7 @@ app.get("/", (c) => {
     health: "GET /health",
     beasts: {
       by_owner: "GET /beasts/:owner",
+      by_token: "GET /beasts/token/:token_id",
       all: "GET /beasts/all?limit=25&offset=0&prefix=&suffix=&beast_id=&name=&owner=&sort=summit_held_seconds",
       counts: "GET /beasts/stats/counts",
       top: "GET /beasts/stats/top?limit=25&offset=0",
