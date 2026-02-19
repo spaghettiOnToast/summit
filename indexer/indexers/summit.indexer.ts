@@ -870,59 +870,57 @@ export default function indexer(runtimeConfig: ApibaraRuntimeConfig) {
   // Backfill beast_data entity_hash → token_id mappings for beasts
   // that were minted before the indexer's starting block. Transfer events
   // for those beasts were never seen, so beast_data has no token_id link.
-  await (async () => {
-    try {
-      const allBeasts = await database
-        .select({
-          token_id: schema.beasts.token_id,
-          beast_id: schema.beasts.beast_id,
-          prefix: schema.beasts.prefix,
-          suffix: schema.beasts.suffix,
-        })
-        .from(schema.beasts);
+  try {
+    const allBeasts = await database
+      .select({
+        token_id: schema.beasts.token_id,
+        beast_id: schema.beasts.beast_id,
+        prefix: schema.beasts.prefix,
+        suffix: schema.beasts.suffix,
+      })
+      .from(schema.beasts);
 
-      if (allBeasts.length === 0) {
-        console.log("[Summit Indexer] No beasts in DB to backfill beast_data mappings.");
-      } else {
-        const values = allBeasts.map((b) => ({
-          entity_hash: computeEntityHash(b.beast_id, b.prefix, b.suffix),
-          token_id: b.token_id,
-          adventurers_killed: 0n,
-          last_death_timestamp: 0n,
-          last_killed_by: 0n,
-          updated_at: new Date(),
-        }));
+    if (allBeasts.length === 0) {
+      console.log("[Summit Indexer] No beasts in DB to backfill beast_data mappings.");
+    } else {
+      const values = allBeasts.map((b) => ({
+        entity_hash: computeEntityHash(b.beast_id, b.prefix, b.suffix),
+        token_id: b.token_id,
+        adventurers_killed: 0n,
+        last_death_timestamp: 0n,
+        last_killed_by: 0n,
+        updated_at: new Date(),
+      }));
 
-        // Batch upsert in chunks to avoid oversized queries
-        const CHUNK_SIZE = 500;
-        let linked = 0;
-        for (let i = 0; i < values.length; i += CHUNK_SIZE) {
-          const chunk = values.slice(i, i + CHUNK_SIZE);
-          await database
-            .insert(schema.beast_data)
-            .values(chunk)
-            .onConflictDoUpdate({
-              target: schema.beast_data.entity_hash,
-              set: {
-                // Only set token_id if it was previously NULL
-                token_id: sql`COALESCE(beast_data.token_id, excluded.token_id)`,
-                updated_at: sql`excluded.updated_at`,
-              },
-            });
-          linked += chunk.length;
-        }
-        console.log(`[Summit Indexer] Backfilled beast_data: ${linked} entity_hash → token_id mappings.`);
-
-        // Also populate fetchedTokens cache so Transfer events don't re-fetch metadata
-        for (const b of allBeasts) {
-          fetchedTokens.add(b.token_id);
-        }
-        console.log(`[Summit Indexer] Pre-populated fetchedTokens cache with ${allBeasts.length} entries.`);
+      // Batch upsert in chunks to avoid oversized queries
+      const CHUNK_SIZE = 500;
+      let linked = 0;
+      for (let i = 0; i < values.length; i += CHUNK_SIZE) {
+        const chunk = values.slice(i, i + CHUNK_SIZE);
+        await database
+          .insert(schema.beast_data)
+          .values(chunk)
+          .onConflictDoUpdate({
+            target: schema.beast_data.entity_hash,
+            set: {
+              // Only set token_id if it was previously NULL
+              token_id: sql`COALESCE(beast_data.token_id, excluded.token_id)`,
+              updated_at: sql`excluded.updated_at`,
+            },
+          });
+        linked += chunk.length;
       }
-    } catch (err) {
-      console.error("[Summit Indexer] beast_data backfill failed (non-fatal):", err);
+      console.log(`[Summit Indexer] Backfilled beast_data: ${linked} entity_hash → token_id mappings.`);
+
+      // Also populate fetchedTokens cache so Transfer events don't re-fetch metadata
+      for (const b of allBeasts) {
+        fetchedTokens.add(b.token_id);
+      }
+      console.log(`[Summit Indexer] Pre-populated fetchedTokens cache with ${allBeasts.length} entries.`);
     }
-  })();
+  } catch (err) {
+    console.error("[Summit Indexer] beast_data backfill failed (non-fatal):", err);
+  }
 
   // getBeast selector: starknet_keccak("getBeast")
   const GET_BEAST_SELECTOR = "0x0385b69551f247794fe651459651cdabc76b6cdf4abacafb5b28ceb3b1ac2e98";
