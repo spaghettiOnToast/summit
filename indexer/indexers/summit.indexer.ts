@@ -1009,170 +1009,42 @@ export default function indexer(runtimeConfig: ApibaraRuntimeConfig) {
         // Keep connection alive with periodic heartbeats (30 seconds)
         request.heartbeatInterval = { seconds: 30n, nanos: 0 };
       },
-      "connect:after": () => {
+      "connect:after": async () => {
         console.log("[Summit Indexer] Connected to DNA stream");
-      },
-    },
-    async transform({ block }) {
-      // Backfill beast_data entity_hash → token_id mappings on first block.
-      // Beasts minted before the indexer's starting block have no token_id in
-      // beast_data because their Transfer events were never seen.
-      if (!backfillDone) {
-        backfillDone = true;
-        try {
-          const allBeasts = await database
-            .select({
-              token_id: schema.beasts.token_id,
-              beast_id: schema.beasts.beast_id,
-              prefix: schema.beasts.prefix,
-              suffix: schema.beasts.suffix,
-            })
-            .from(schema.beasts);
 
-          if (allBeasts.length === 0) {
-            console.log("[Summit Indexer] No beasts in DB to backfill beast_data mappings.");
-          } else {
-            const values = allBeasts.map((b: { beast_id: number; prefix: number; suffix: number; token_id: number }) => ({
-              entity_hash: computeEntityHash(b.beast_id, b.prefix, b.suffix),
-              token_id: b.token_id,
-              adventurers_killed: 0n,
-              last_death_timestamp: 0n,
-              last_killed_by: 0n,
-              updated_at: new Date(),
-            }));
+        // Run beasts backfill on connection (before waiting for blocks).
+        // Finds token_ids in beast_owners/beast_stats missing from beasts table
+        // and fetches metadata via RPC.
+        if (!backfillDone) {
+          backfillDone = true;
+          try {
+            // --- Phase 1: beast_data entity_hash backfill ---
+            const allBeasts = await database
+              .select({
+                token_id: schema.beasts.token_id,
+                beast_id: schema.beasts.beast_id,
+                prefix: schema.beasts.prefix,
+                suffix: schema.beasts.suffix,
+              })
+              .from(schema.beasts);
 
-            const CHUNK_SIZE = 500;
-            let linked = 0;
-            for (let i = 0; i < values.length; i += CHUNK_SIZE) {
-              const chunk = values.slice(i, i + CHUNK_SIZE);
-              await database
-                .insert(schema.beast_data)
-                .values(chunk)
-                .onConflictDoUpdate({
-                  target: schema.beast_data.entity_hash,
-                  set: {
-                    token_id: sql`COALESCE(beast_data.token_id, excluded.token_id)`,
-                    updated_at: sql`excluded.updated_at`,
-                  },
-                });
-              linked += chunk.length;
-            }
-            console.log(`[Summit Indexer] Backfilled beast_data: ${linked} entity_hash → token_id mappings.`);
+            if (allBeasts.length > 0) {
+              const values = allBeasts.map((b: { beast_id: number; prefix: number; suffix: number; token_id: number }) => ({
+                entity_hash: computeEntityHash(b.beast_id, b.prefix, b.suffix),
+                token_id: b.token_id,
+                adventurers_killed: 0n,
+                last_death_timestamp: 0n,
+                last_killed_by: 0n,
+                updated_at: new Date(),
+              }));
 
-            for (const b of allBeasts) {
-              fetchedTokens.add(b.token_id);
-            }
-            console.log(`[Summit Indexer] Pre-populated fetchedTokens cache with ${allBeasts.length} entries.`);
-          }
-        } catch (err) {
-          console.error("[Summit Indexer] beast_data backfill failed (non-fatal):", err);
-        }
-
-        // Backfill beasts table: find token_ids in beast_owners or beast_stats
-        // that are missing from the beasts table (minted before starting block).
-        // Fetch their metadata via RPC and insert into beasts + beast_data.
-        try {
-          const missingFromOwners = await database
-            .select({ token_id: schema.beast_owners.token_id })
-            .from(schema.beast_owners)
-            .where(
-              sql`${schema.beast_owners.token_id} NOT IN (SELECT ${schema.beasts.token_id} FROM ${schema.beasts})`
-            );
-
-          const missingFromStats = await database
-            .select({ token_id: schema.beast_stats.token_id })
-            .from(schema.beast_stats)
-            .where(
-              sql`${schema.beast_stats.token_id} NOT IN (SELECT ${schema.beasts.token_id} FROM ${schema.beasts})`
-            );
-
-          // Deduplicate
-          const missingTokenIds = [
-            ...new Set([
-              ...missingFromOwners.map((r: { token_id: number }) => r.token_id),
-              ...missingFromStats.map((r: { token_id: number }) => r.token_id),
-            ]),
-          ];
-
-          if (missingTokenIds.length === 0) {
-            console.log("[Summit Indexer] No missing beasts to backfill.");
-          } else {
-            console.log(`[Summit Indexer] Found ${missingTokenIds.length} beasts missing from beasts table. Fetching metadata via RPC...`);
-
-            const BATCH_SIZE = 20;
-            let fetched = 0;
-            let inserted = 0;
-
-            for (let i = 0; i < missingTokenIds.length; i += BATCH_SIZE) {
-              const batch = missingTokenIds.slice(i, i + BATCH_SIZE);
-              const results = await Promise.all(
-                batch.map(async (token_id) => {
-                  const metadata = await fetchBeastMetadata(token_id);
-                  return metadata ? { token_id, metadata } : null;
-                })
-              );
-
-              const beastsToInsert: Array<{
-                token_id: number;
-                beast_id: number;
-                prefix: number;
-                suffix: number;
-                level: number;
-                health: number;
-                shiny: number;
-                animated: number;
-                created_at: Date;
-                indexed_at: Date;
-              }> = [];
-              const beastDataToInsert: Array<{
-                entity_hash: string;
-                token_id: number;
-                adventurers_killed: bigint;
-                last_death_timestamp: bigint;
-                last_killed_by: bigint;
-                updated_at: Date;
-              }> = [];
-
-              const now = new Date();
-              for (const r of results) {
-                if (!r) continue;
-                fetched++;
-                const { token_id, metadata } = r;
-                beastsToInsert.push({
-                  token_id,
-                  beast_id: metadata.id,
-                  prefix: metadata.prefix,
-                  suffix: metadata.suffix,
-                  level: metadata.level,
-                  health: metadata.health,
-                  shiny: metadata.shiny,
-                  animated: metadata.animated,
-                  created_at: now,
-                  indexed_at: now,
-                });
-                beastDataToInsert.push({
-                  entity_hash: computeEntityHash(metadata.id, metadata.prefix, metadata.suffix),
-                  token_id,
-                  adventurers_killed: 0n,
-                  last_death_timestamp: 0n,
-                  last_killed_by: 0n,
-                  updated_at: now,
-                });
-                fetchedTokens.add(token_id);
-              }
-
-              if (beastsToInsert.length > 0) {
-                await database
-                  .insert(schema.beasts)
-                  .values(beastsToInsert)
-                  .onConflictDoNothing();
-                inserted += beastsToInsert.length;
-              }
-
-              if (beastDataToInsert.length > 0) {
+              const CHUNK_SIZE = 500;
+              let linked = 0;
+              for (let i = 0; i < values.length; i += CHUNK_SIZE) {
+                const chunk = values.slice(i, i + CHUNK_SIZE);
                 await database
                   .insert(schema.beast_data)
-                  .values(beastDataToInsert)
+                  .values(chunk)
                   .onConflictDoUpdate({
                     target: schema.beast_data.entity_hash,
                     set: {
@@ -1180,20 +1052,142 @@ export default function indexer(runtimeConfig: ApibaraRuntimeConfig) {
                       updated_at: sql`excluded.updated_at`,
                     },
                   });
+                linked += chunk.length;
               }
+              console.log(`[Summit Indexer] Backfilled beast_data: ${linked} entity_hash → token_id mappings.`);
 
-              if (fetched % 100 === 0 && fetched > 0) {
-                console.log(`[Summit Indexer] Beasts backfill progress: ${fetched}/${missingTokenIds.length} fetched, ${inserted} inserted.`);
+              for (const b of allBeasts) {
+                fetchedTokens.add(b.token_id);
               }
+              console.log(`[Summit Indexer] Pre-populated fetchedTokens cache with ${allBeasts.length} entries.`);
+            } else {
+              console.log("[Summit Indexer] No beasts in DB to backfill beast_data mappings.");
             }
 
-            console.log(`[Summit Indexer] Beasts backfill complete: ${inserted} beasts inserted from ${missingTokenIds.length} missing.`);
-          }
-        } catch (err) {
-          console.error("[Summit Indexer] Beasts backfill failed (non-fatal):", err);
-        }
-      }
+            // --- Phase 2: beasts table backfill for missing tokens ---
+            const missingFromOwners = await database
+              .select({ token_id: schema.beast_owners.token_id })
+              .from(schema.beast_owners)
+              .where(
+                sql`${schema.beast_owners.token_id} NOT IN (SELECT ${schema.beasts.token_id} FROM ${schema.beasts})`
+              );
 
+            const missingFromStats = await database
+              .select({ token_id: schema.beast_stats.token_id })
+              .from(schema.beast_stats)
+              .where(
+                sql`${schema.beast_stats.token_id} NOT IN (SELECT ${schema.beasts.token_id} FROM ${schema.beasts})`
+              );
+
+            const missingTokenIds = [
+              ...new Set([
+                ...missingFromOwners.map((r: { token_id: number }) => r.token_id),
+                ...missingFromStats.map((r: { token_id: number }) => r.token_id),
+              ]),
+            ];
+
+            if (missingTokenIds.length === 0) {
+              console.log("[Summit Indexer] No missing beasts to backfill.");
+            } else {
+              console.log(`[Summit Indexer] Found ${missingTokenIds.length} beasts missing from beasts table. Fetching metadata via RPC...`);
+
+              const BATCH_SIZE = 20;
+              let fetched = 0;
+              let inserted = 0;
+
+              for (let i = 0; i < missingTokenIds.length; i += BATCH_SIZE) {
+                const batch = missingTokenIds.slice(i, i + BATCH_SIZE);
+                const results = await Promise.all(
+                  batch.map(async (token_id) => {
+                    const metadata = await fetchBeastMetadata(token_id);
+                    return metadata ? { token_id, metadata } : null;
+                  })
+                );
+
+                const beastsToInsert: Array<{
+                  token_id: number;
+                  beast_id: number;
+                  prefix: number;
+                  suffix: number;
+                  level: number;
+                  health: number;
+                  shiny: number;
+                  animated: number;
+                  created_at: Date;
+                  indexed_at: Date;
+                }> = [];
+                const beastDataToInsert: Array<{
+                  entity_hash: string;
+                  token_id: number;
+                  adventurers_killed: bigint;
+                  last_death_timestamp: bigint;
+                  last_killed_by: bigint;
+                  updated_at: Date;
+                }> = [];
+
+                const now = new Date();
+                for (const r of results) {
+                  if (!r) continue;
+                  fetched++;
+                  const { token_id, metadata } = r;
+                  beastsToInsert.push({
+                    token_id,
+                    beast_id: metadata.id,
+                    prefix: metadata.prefix,
+                    suffix: metadata.suffix,
+                    level: metadata.level,
+                    health: metadata.health,
+                    shiny: metadata.shiny,
+                    animated: metadata.animated,
+                    created_at: now,
+                    indexed_at: now,
+                  });
+                  beastDataToInsert.push({
+                    entity_hash: computeEntityHash(metadata.id, metadata.prefix, metadata.suffix),
+                    token_id,
+                    adventurers_killed: 0n,
+                    last_death_timestamp: 0n,
+                    last_killed_by: 0n,
+                    updated_at: now,
+                  });
+                  fetchedTokens.add(token_id);
+                }
+
+                if (beastsToInsert.length > 0) {
+                  await database
+                    .insert(schema.beasts)
+                    .values(beastsToInsert)
+                    .onConflictDoNothing();
+                  inserted += beastsToInsert.length;
+                }
+
+                if (beastDataToInsert.length > 0) {
+                  await database
+                    .insert(schema.beast_data)
+                    .values(beastDataToInsert)
+                    .onConflictDoUpdate({
+                      target: schema.beast_data.entity_hash,
+                      set: {
+                        token_id: sql`COALESCE(beast_data.token_id, excluded.token_id)`,
+                        updated_at: sql`excluded.updated_at`,
+                      },
+                    });
+                }
+
+                if (fetched % 100 === 0 && fetched > 0) {
+                  console.log(`[Summit Indexer] Beasts backfill progress: ${fetched}/${missingTokenIds.length} fetched, ${inserted} inserted.`);
+                }
+              }
+
+              console.log(`[Summit Indexer] Beasts backfill complete: ${inserted} beasts inserted from ${missingTokenIds.length} missing.`);
+            }
+          } catch (err) {
+            console.error("[Summit Indexer] Backfill failed (non-fatal):", err);
+          }
+        }
+      },
+    },
+    async transform({ block }) {
       // Capture DNA delivery time FIRST - before any processing
       const indexed_at = new Date();
       const blockStartTime = Date.now();
