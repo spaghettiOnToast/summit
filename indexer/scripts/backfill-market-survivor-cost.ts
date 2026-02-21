@@ -162,8 +162,8 @@ async function main() {
       `SELECT MAX(block_number) as max_block FROM summit_log`
     );
     const maxBlock = Number(rangeRes.rows[0].max_block);
-    // First market event was around block 6,984,533; scan from a bit before
-    const fromBlock = 6_984_000;
+    // Scan from the indexer's starting block to catch all historical market events
+    const fromBlock = 6_866_000;
     const toBlock = maxBlock;
     console.log(`[Backfill] Scanning blocks ${fromBlock} to ${toBlock}`);
 
