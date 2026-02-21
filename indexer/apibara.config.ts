@@ -22,6 +22,7 @@ export default defineConfig({
       attackTokenAddress: "0x016f9def00daef9f1874dd932b081096f50aec2fe61df31a81bc5707a7522443",
       reviveTokenAddress: "0x029023e0a455d19d6887bc13727356070089527b79e6feb562ffe1afd6711dbe",
       poisonTokenAddress: "0x049eaed2a1ba2f2eb6ac2661ffd2d79231cdd7d5293d9448df49c5986c9897ae",
+      survivorTokenAddress: "0x042dd777885ad2c116be96d4d634abc90a26a790ffb5871e037dd5ae7d2ec86b",
       // Mainnet DNA stream URL
       streamUrl: process.env.STREAM_URL,
       // Starting block - use earliest block needed for Dojo events

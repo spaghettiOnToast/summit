@@ -71,6 +71,7 @@ interface SummitConfig {
   attackTokenAddress: string;
   reviveTokenAddress: string;
   poisonTokenAddress: string;
+  survivorTokenAddress: string;
   streamUrl: string;
   startingBlock: string;
   databaseUrl: string;
@@ -796,6 +797,7 @@ export default function indexer(runtimeConfig: ApibaraRuntimeConfig) {
     attackTokenAddress,
     reviveTokenAddress,
     poisonTokenAddress,
+    survivorTokenAddress,
     streamUrl,
     startingBlock: startBlockStr,
     databaseUrl,
@@ -818,6 +820,7 @@ export default function indexer(runtimeConfig: ApibaraRuntimeConfig) {
   const attackAddressBigInt = addressToBigInt(attackTokenAddress);
   const reviveAddressBigInt = addressToBigInt(reviveTokenAddress);
   const poisonAddressBigInt = addressToBigInt(poisonTokenAddress);
+  const survivorAddressBigInt = addressToBigInt(survivorTokenAddress);
 
   // Map from contract address BigInt to consumable column name
   const consumableAddressMap = new Map<bigint, "xlife_count" | "attack_count" | "revive_count" | "poison_count">([
@@ -845,6 +848,7 @@ export default function indexer(runtimeConfig: ApibaraRuntimeConfig) {
   console.log("[Summit Indexer] ATTACK Token:", attackTokenAddress);
   console.log("[Summit Indexer] REVIVE Token:", reviveTokenAddress);
   console.log("[Summit Indexer] POISON Token:", poisonTokenAddress);
+  console.log("[Summit Indexer] SURVIVOR Token:", survivorTokenAddress);
   console.log("[Summit Indexer] Stream:", streamUrl);
   console.log("[Summit Indexer] Starting Block:", startingBlock.toString());
   console.log("[Summit Indexer] RPC URL:", rpcUrl);
@@ -983,6 +987,11 @@ export default function indexer(runtimeConfig: ApibaraRuntimeConfig) {
         },
         {
           address: poisonTokenAddress.toLowerCase() as `0x${string}`,
+          keys: [BEAST_EVENT_SELECTORS.Transfer as `0x${string}`],
+        },
+        // $SURVIVOR token - Transfer events (for revenue tracking)
+        {
+          address: survivorTokenAddress.toLowerCase() as `0x${string}`,
           keys: [BEAST_EVENT_SELECTORS.Transfer as `0x${string}`],
         },
       ],
@@ -1241,6 +1250,16 @@ export default function indexer(runtimeConfig: ApibaraRuntimeConfig) {
         token: string;
         address: string;
         amount: number; // positive = received, negative = sent
+        event_index: number;
+        involvesEkubo: boolean;
+      }> = [];
+
+      // Track $SURVIVOR transfers for revenue calculation on potion swaps.
+      // Correlated with consumable transfers by transaction_hash during deferred Market resolution.
+      const allSurvivorTransfers: Array<{
+        transaction_hash: string;
+        address: string;
+        amount: number;
         event_index: number;
         involvesEkubo: boolean;
       }> = [];
@@ -1557,6 +1576,30 @@ export default function indexer(runtimeConfig: ApibaraRuntimeConfig) {
               allConsumableTransfers.push({
                 transaction_hash, token: tokenName,
                 address: decoded.from, amount: -wholeUnits, event_index, involvesEkubo,
+              });
+            }
+            continue;
+          }
+
+          // $SURVIVOR token Transfer events — collect for revenue tracking (no consumables table update)
+          if (addressToBigInt(event_address) === survivorAddressBigInt && selector === BEAST_EVENT_SELECTORS.Transfer) {
+            const decoded = decodeERC20TransferEvent([...keys], [...data]);
+            const wholeUnits = Number(decoded.amount / 1_000_000_000_000_000_000n);
+            if (wholeUnits === 0) continue;
+
+            const fromAddr = addressToBigInt(decoded.from);
+            const toAddr = addressToBigInt(decoded.to);
+            const isExcluded = (addr: bigint) => addr === 0n || addr === ekuboCoreAddressBigInt;
+            const involvesEkubo = fromAddr === ekuboCoreAddressBigInt || toAddr === ekuboCoreAddressBigInt;
+
+            if (!isExcluded(toAddr)) {
+              allSurvivorTransfers.push({
+                transaction_hash, address: decoded.to, amount: wholeUnits, event_index, involvesEkubo,
+              });
+            }
+            if (!isExcluded(fromAddr)) {
+              allSurvivorTransfers.push({
+                transaction_hash, address: decoded.from, amount: -wholeUnits, event_index, involvesEkubo,
               });
             }
             continue;
@@ -2214,12 +2257,22 @@ export default function indexer(runtimeConfig: ApibaraRuntimeConfig) {
             netFlow.set(t.address, (netFlow.get(t.address) || 0) + t.amount);
           }
 
+          // Compute $SURVIVOR net flow for this transaction (for revenue tracking)
+          const first = transfers[0];
+          const survivorTransfersForTx = allSurvivorTransfers.filter(
+            t => t.transaction_hash === first.transaction_hash
+          );
+          const survivorNetFlow = new Map<string, number>();
+          for (const t of survivorTransfersForTx) {
+            survivorNetFlow.set(t.address, (survivorNetFlow.get(t.address) || 0) + t.amount);
+          }
+
           // Find the address with non-zero net flow (the actual user)
           for (const [address, net] of netFlow) {
             if (net === 0) continue; // Router (received then forwarded) — skip
 
-            const first = transfers[0];
             const isBuy = net > 0;
+            const survivorCost = Math.abs(survivorNetFlow.get(address) || 0);
             collectSummitLog(batches, {
               block_number,
               event_index: first.event_index,
@@ -2229,6 +2282,7 @@ export default function indexer(runtimeConfig: ApibaraRuntimeConfig) {
                 player: address,
                 token: first.token,
                 amount: Math.abs(net),
+                survivor_cost: survivorCost,
               },
               player: address,
               token_id: null,

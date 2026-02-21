@@ -12,6 +12,7 @@
     "test:coverage": "vitest run --coverage",
     "test:parity": "tsx scripts/test-live-beast-stats-parity.ts",
     "check-dna": "tsx scripts/check-dna-status.ts",
+    "reindex-market": "tsx scripts/reindex-market-logs.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio"
