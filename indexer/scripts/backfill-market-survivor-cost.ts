@@ -54,7 +54,7 @@ interface TransferEvent {
   contract_address: string;
   from: string;
   to: string;
-  amount: number; // whole units
+  amount: number; // token units (may be fractional for $SURVIVOR)
   event_index: number;
 }
 
@@ -144,9 +144,10 @@ async function main() {
   await client.connect();
 
   try {
-    // 1. Find what market logs already exist
+    // 1. Find what market logs already exist (and track which have zero survivor_cost)
     const existingRes = await client.query(
-      `SELECT transaction_hash, sub_category, (data->>'token')::text as token
+      `SELECT id, transaction_hash, sub_category, (data->>'token')::text as token,
+              (data->>'survivor_cost')::numeric as survivor_cost
        FROM summit_log
        WHERE sub_category IN ('Bought Potions', 'Sold Potions')`
     );
@@ -154,7 +155,14 @@ async function main() {
       existingRes.rows.map((r: { transaction_hash: string; token: string; sub_category: string }) =>
         `${r.transaction_hash}:${r.token}:${r.sub_category}`)
     );
-    console.log(`[Backfill] ${existingRes.rows.length} market logs already exist`);
+    // Track rows that need survivor_cost updates (existing rows with cost = 0)
+    const zeroCostRows = new Map<string, string>(); // txKey -> row id
+    for (const r of existingRes.rows as Array<{ id: string; transaction_hash: string; token: string; sub_category: string; survivor_cost: number }>) {
+      if (Number(r.survivor_cost) === 0) {
+        zeroCostRows.set(`${r.transaction_hash}:${r.token}:${r.sub_category}`, r.id);
+      }
+    }
+    console.log(`[Backfill] ${existingRes.rows.length} market logs already exist (${zeroCostRows.size} with zero survivor_cost)`);
 
     // 2. Determine block range to scan
     // Use the full range where market events could exist
@@ -194,29 +202,24 @@ async function main() {
     }
     console.log(`[Backfill] ${potionTransfers.length} non-zero potion transfers total`);
 
-    // 4. Fetch $SURVIVOR Transfer events
+    // 4. Fetch $SURVIVOR Transfer events — only track inflows to Ekubo Core (pool revenue)
     console.log(`[Backfill] Fetching $SURVIVOR Transfer events from RPC...`);
     const survivorEvents = await getAllEvents(SURVIVOR_TOKEN, fromBlock, toBlock);
     console.log(`  $SURVIVOR: ${survivorEvents.length} Transfer events`);
-    const survivorTransfers: TransferEvent[] = [];
+
+    // Sum $SURVIVOR inflow to Ekubo Core per transaction
+    const survivorInflowByTx = new Map<string, number>();
     for (const e of survivorEvents) {
-      const from = feltToHex(e.keys[1]);
-      const to = feltToHex(e.keys[2]);
+      const to = feltToHex(e.keys[1 + 1]); // keys[2] = recipient
+      if (addressToBigInt(to) !== ekuboBigInt) continue;
       const amountLow = BigInt(e.data[0]);
       const amountHigh = BigInt(e.data[1] ?? "0x0");
       const amount = amountLow + (amountHigh * (2n ** 128n));
-      const wholeUnits = Number(amount / 1_000_000_000_000_000_000n);
-      if (wholeUnits === 0) continue;
-      survivorTransfers.push({
-        transaction_hash: e.transaction_hash,
-        block_number: e.block_number,
-        block_timestamp: "",
-        contract_address: SURVIVOR_TOKEN,
-        from, to,
-        amount: wholeUnits,
-        event_index: e.event_index,
-      });
+      const units = Number(amount) / 1e18;
+      if (units === 0) continue;
+      survivorInflowByTx.set(e.transaction_hash, (survivorInflowByTx.get(e.transaction_hash) || 0) + units);
     }
+    console.log(`  Transactions with $SURVIVOR -> Ekubo: ${survivorInflowByTx.size}`);
 
     // 5. Group potion transfers by (transaction_hash, token) — same logic as indexer
     const txTokenMap = new Map<string, { tokenName: string; transfers: TransferEvent[] }>();
@@ -227,15 +230,6 @@ async function main() {
         txTokenMap.set(key, { tokenName, transfers: [] });
       }
       txTokenMap.get(key)!.transfers.push(t);
-    }
-
-    // Group $SURVIVOR transfers by transaction_hash
-    const survivorByTx = new Map<string, TransferEvent[]>();
-    for (const t of survivorTransfers) {
-      if (!survivorByTx.has(t.transaction_hash)) {
-        survivorByTx.set(t.transaction_hash, []);
-      }
-      survivorByTx.get(t.transaction_hash)!.push(t);
     }
 
     // 6. Resolve market events (same algorithm as indexer)
@@ -253,6 +247,7 @@ async function main() {
     }
 
     const newRows: MarketLogRow[] = [];
+    const updateRows: Array<{ id: string; survivor_cost: number }> = [];
     // Use a high offset for event_index to avoid collisions with existing rows
     // (real event indices from the indexer are typically < 1000)
     let backfillEventIndex = 50000;
@@ -282,32 +277,27 @@ async function main() {
         }
       }
 
-      // Compute $SURVIVOR net flow for this transaction
-      const survivorTx = survivorByTx.get(transfers[0].transaction_hash) || [];
-      const survivorNetFlow = new Map<string, number>();
-      for (const t of survivorTx) {
-        const fromBig = addressToBigInt(t.from);
-        const toBig = addressToBigInt(t.to);
-        if (!isExcluded(toBig)) {
-          survivorNetFlow.set(t.to, (survivorNetFlow.get(t.to) || 0) + t.amount);
-        }
-        if (!isExcluded(fromBig)) {
-          survivorNetFlow.set(t.from, (survivorNetFlow.get(t.from) || 0) - t.amount);
-        }
-      }
-
+      // $SURVIVOR inflow to Ekubo Core = price paid for potions in this tx
       const first = transfers[0];
+      const survivorInflow = survivorInflowByTx.get(first.transaction_hash) || 0;
+
       for (const [address, net] of netFlow) {
         if (net === 0) continue;
 
         const isBuy = net > 0;
         const subCategory = isBuy ? "Bought Potions" : "Sold Potions";
         const txKey = `${first.transaction_hash}:${tokenName}:${subCategory}`;
+        const survivorCost = Math.round(survivorInflow * 1e4) / 1e4;
 
-        // Skip if already exists
+        // Check if this row already exists with zero cost — if so, queue an update
+        const existingId = zeroCostRows.get(txKey);
+        if (existingId && survivorCost > 0) {
+          updateRows.push({ id: existingId, survivor_cost: survivorCost });
+          continue;
+        }
+
+        // Skip if already exists (with non-zero cost)
         if (existingTxKeys.has(txKey)) continue;
-
-        const survivorCost = Math.abs(survivorNetFlow.get(address) || 0);
 
         newRows.push({
           block_number: first.block_number,
@@ -323,64 +313,96 @@ async function main() {
     }
 
     console.log(`\n[Backfill] ${newRows.length} new market log rows to insert`);
-    if (newRows.length === 0) {
+    console.log(`[Backfill] ${updateRows.length} existing rows to update with survivor_cost`);
+    if (newRows.length === 0 && updateRows.length === 0) {
       console.log("[Backfill] Nothing to do.");
       return;
     }
 
-    // Show sample
-    console.log("[Backfill] Sample rows:");
-    for (const row of newRows.slice(0, 3)) {
-      console.log(`  ${row.sub_category}: ${row.amount} ${row.token} @ ${row.survivor_cost} $SURVIVOR (block ${row.block_number})`);
+    // Show samples
+    if (newRows.length > 0) {
+      console.log("[Backfill] Sample new rows:");
+      for (const row of newRows.slice(0, 3)) {
+        console.log(`  ${row.sub_category}: ${row.amount} ${row.token} @ ${row.survivor_cost} $SURVIVOR (block ${row.block_number})`);
+      }
+    }
+    if (updateRows.length > 0) {
+      console.log("[Backfill] Sample updates:");
+      for (const row of updateRows.slice(0, 3)) {
+        console.log(`  id=${row.id} -> survivor_cost=${row.survivor_cost}`);
+      }
     }
 
     if (DRY_RUN) {
-      console.log(`\n[DRY RUN] Would insert ${newRows.length} rows. Re-run without --dry-run to execute.`);
+      console.log(`\n[DRY RUN] Would insert ${newRows.length} rows and update ${updateRows.length} rows. Re-run without --dry-run to execute.`);
       return;
     }
 
-    // 7. Fetch block timestamps and insert rows
-    console.log(`[Backfill] Fetching block timestamps...`);
-    const uniqueBlocks = [...new Set(newRows.map(r => r.block_number))];
-    for (const bn of uniqueBlocks) {
-      if (!blockTimestamps.has(bn)) {
-        blockTimestamps.set(bn, await getBlockTimestamp(bn));
+    // 7. Fetch block timestamps and insert new rows
+    if (newRows.length > 0) {
+      console.log(`[Backfill] Fetching block timestamps...`);
+      const uniqueBlocks = [...new Set(newRows.map(r => r.block_number))];
+      for (const bn of uniqueBlocks) {
+        if (!blockTimestamps.has(bn)) {
+          blockTimestamps.set(bn, await getBlockTimestamp(bn));
+        }
       }
+
+      console.log(`[Backfill] Inserting ${newRows.length} rows...`);
+      const now = new Date();
+      let inserted = 0;
+      for (const row of newRows) {
+        const blockTs = blockTimestamps.get(row.block_number) || now;
+        try {
+          await client.query(
+            `INSERT INTO summit_log (block_number, event_index, category, sub_category, data, player, token_id, transaction_hash, created_at, indexed_at)
+             VALUES ($1, $2, 'Market', $3, $4, $5, NULL, $6, $7, $8)
+             ON CONFLICT (block_number, transaction_hash, event_index) DO NOTHING`,
+            [
+              row.block_number,
+              row.event_index,
+              row.sub_category,
+              JSON.stringify({
+                player: row.player,
+                token: row.token,
+                amount: row.amount,
+                survivor_cost: row.survivor_cost,
+              }),
+              row.player,
+              row.transaction_hash,
+              blockTs,
+              now,
+            ]
+          );
+          inserted++;
+        } catch (err) {
+          console.error(`  Failed to insert row for tx ${row.transaction_hash}:`, (err as Error).message);
+        }
+      }
+      console.log(`[Backfill] Inserted ${inserted} rows.`);
     }
 
-    console.log(`[Backfill] Inserting ${newRows.length} rows...`);
-    const now = new Date();
-    let inserted = 0;
-    for (const row of newRows) {
-      const blockTs = blockTimestamps.get(row.block_number) || now;
-      try {
-        await client.query(
-          `INSERT INTO summit_log (block_number, event_index, category, sub_category, data, player, token_id, transaction_hash, created_at, indexed_at)
-           VALUES ($1, $2, 'Market', $3, $4, $5, NULL, $6, $7, $8)
-           ON CONFLICT (block_number, transaction_hash, event_index) DO NOTHING`,
-          [
-            row.block_number,
-            row.event_index,
-            row.sub_category,
-            JSON.stringify({
-              player: row.player,
-              token: row.token,
-              amount: row.amount,
-              survivor_cost: row.survivor_cost,
-            }),
-            row.player,
-            row.transaction_hash,
-            blockTs,
-            now,
-          ]
-        );
-        inserted++;
-      } catch (err) {
-        console.error(`  Failed to insert row for tx ${row.transaction_hash}:`, (err as Error).message);
+    // 8. Update existing rows that had zero survivor_cost
+    if (updateRows.length > 0) {
+      console.log(`[Backfill] Updating ${updateRows.length} existing rows with survivor_cost...`);
+      let updated = 0;
+      for (const row of updateRows) {
+        try {
+          await client.query(
+            `UPDATE summit_log
+             SET data = jsonb_set(data, '{survivor_cost}', $1::jsonb)
+             WHERE id = $2`,
+            [JSON.stringify(row.survivor_cost), row.id]
+          );
+          updated++;
+        } catch (err) {
+          console.error(`  Failed to update row ${row.id}:`, (err as Error).message);
+        }
       }
+      console.log(`[Backfill] Updated ${updated} rows.`);
     }
 
-    console.log(`\n[Backfill] Done. Inserted ${inserted} rows.`);
+    console.log(`\n[Backfill] Done.`);
 
     // Final count
     const finalRes = await client.query(

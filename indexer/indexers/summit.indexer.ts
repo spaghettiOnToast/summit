@@ -1254,14 +1254,12 @@ export default function indexer(runtimeConfig: ApibaraRuntimeConfig) {
         involvesEkubo: boolean;
       }> = [];
 
-      // Track $SURVIVOR transfers for revenue calculation on potion swaps.
-      // Correlated with consumable transfers by transaction_hash during deferred Market resolution.
+      // Track $SURVIVOR inflows to Ekubo Core for revenue calculation on potion swaps.
+      // Summed per transaction_hash during deferred Market resolution.
       const allSurvivorTransfers: Array<{
         transaction_hash: string;
-        address: string;
         amount: number;
         event_index: number;
-        involvesEkubo: boolean;
       }> = [];
 
       // Track skull events that need beast_data lookup for adventurers_killed (must be done before processing)
@@ -1581,25 +1579,21 @@ export default function indexer(runtimeConfig: ApibaraRuntimeConfig) {
             continue;
           }
 
-          // $SURVIVOR token Transfer events — collect for revenue tracking (no consumables table update)
+          // $SURVIVOR token Transfer events — track inflow to Ekubo Core for revenue tracking.
+          // Instead of matching by buyer address (which misses routers, session wallets, DCAs),
+          // we sum $SURVIVOR going INTO Ekubo Core per transaction — that's the price paid for potions.
           if (addressToBigInt(event_address) === survivorAddressBigInt && selector === BEAST_EVENT_SELECTORS.Transfer) {
             const decoded = decodeERC20TransferEvent([...keys], [...data]);
-            const wholeUnits = Number(decoded.amount / 1_000_000_000_000_000_000n);
-            if (wholeUnits === 0) continue;
+            // Use float division to preserve fractional $SURVIVOR amounts (e.g. 0.3 SURVIVOR for small DCA fills)
+            const units = Number(decoded.amount) / 1e18;
+            if (units === 0) continue;
 
-            const fromAddr = addressToBigInt(decoded.from);
             const toAddr = addressToBigInt(decoded.to);
-            const isExcluded = (addr: bigint) => addr === 0n || addr === ekuboCoreAddressBigInt;
-            const involvesEkubo = fromAddr === ekuboCoreAddressBigInt || toAddr === ekuboCoreAddressBigInt;
-
-            if (!isExcluded(toAddr)) {
+            // Track $SURVIVOR flowing into Ekubo Core — this captures all swap revenue
+            // regardless of whether the buyer used a router, session wallet, or DCA order
+            if (toAddr === ekuboCoreAddressBigInt) {
               allSurvivorTransfers.push({
-                transaction_hash, address: decoded.to, amount: wholeUnits, event_index, involvesEkubo,
-              });
-            }
-            if (!isExcluded(fromAddr)) {
-              allSurvivorTransfers.push({
-                transaction_hash, address: decoded.from, amount: -wholeUnits, event_index, involvesEkubo,
+                transaction_hash, amount: units, event_index,
               });
             }
             continue;
@@ -2257,22 +2251,19 @@ export default function indexer(runtimeConfig: ApibaraRuntimeConfig) {
             netFlow.set(t.address, (netFlow.get(t.address) || 0) + t.amount);
           }
 
-          // Compute $SURVIVOR net flow for this transaction (for revenue tracking)
+          // Compute total $SURVIVOR inflow to Ekubo Core for this transaction.
+          // This captures revenue regardless of buyer path (direct, router, DCA).
           const first = transfers[0];
-          const survivorTransfersForTx = allSurvivorTransfers.filter(
-            t => t.transaction_hash === first.transaction_hash
-          );
-          const survivorNetFlow = new Map<string, number>();
-          for (const t of survivorTransfersForTx) {
-            survivorNetFlow.set(t.address, (survivorNetFlow.get(t.address) || 0) + t.amount);
-          }
+          const survivorInflow = allSurvivorTransfers
+            .filter(t => t.transaction_hash === first.transaction_hash)
+            .reduce((sum, t) => sum + t.amount, 0);
 
           // Find the address with non-zero net flow (the actual user)
           for (const [address, net] of netFlow) {
             if (net === 0) continue; // Router (received then forwarded) — skip
 
             const isBuy = net > 0;
-            const survivorCost = Math.abs(survivorNetFlow.get(address) || 0);
+            const survivorCost = Math.round(survivorInflow * 1e4) / 1e4;
             collectSummitLog(batches, {
               block_number,
               event_index: first.event_index,
