@@ -64,6 +64,7 @@ function ActionBar() {
     revivePotionMaxPerBeast,
     useAttackPotions,
     attackPotionMax,
+    attackPotionMaxPerBeast,
     revivePotionsUsed,
     attackPotionsUsed,
     setRevivePotionsUsed,
@@ -76,7 +77,6 @@ function ActionBar() {
     poisonConservativeExtraLivesTrigger,
     poisonConservativeAmount,
     poisonAggressiveAmount,
-    initializeMaxCapsFromBalances,
   } = useAutopilotStore();
 
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
@@ -163,7 +163,7 @@ function ActionBar() {
         const attackPotions = calculateOptimalAttackPotions(
           attackSelection,
           summit,
-          Math.min(attackPotionMax - attackPotionsUsed, 255)
+          Math.min(attackPotionMax - attackPotionsUsed, attackPotionMaxPerBeast, 255)
         );
         const newCombat = calculateBattleResult(filtered[0], summit, attackPotions);
         filtered[0].combat = newCombat;
@@ -236,11 +236,6 @@ function ActionBar() {
   const revivalPotionsRequired = calculateRevivalRequired(selectedBeasts);
 
   useEffect(() => {
-    initializeMaxCapsFromBalances(tokenBalances);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reviveBalance, attackBalance, extraLifeBalance, poisonBalance]);
-
-  useEffect(() => {
     if (attackMode === 'autopilot') {
       setSelectedBeasts([]);
       setAppliedExtraLifePotions(0);
@@ -288,13 +283,13 @@ function ActionBar() {
       return;
     };
 
-    if (poisonStrategy === 'conservative'
-      && summit.beast.extra_lives >= poisonConservativeExtraLivesTrigger
-      && summit.poison_count < poisonConservativeAmount) {
-      const remainingCap = Math.max(0, poisonTotalMax - poisonPotionsUsed);
-      const poisonBalance = tokenBalances?.["POISON"] || 0;
-      handleApplyPoison(Math.min(poisonConservativeAmount - summit.poison_count, poisonBalance, remainingCap));
-    }
+    // if (poisonStrategy === 'conservative'
+    //   && summit.beast.extra_lives >= poisonConservativeExtraLivesTrigger
+    //   && summit.poison_count < poisonConservativeAmount) {
+    //   const remainingCap = Math.max(0, poisonTotalMax - poisonPotionsUsed);
+    //   const poisonBalance = tokenBalances?.["POISON"] || 0;
+    //   handleApplyPoison(Math.min(poisonConservativeAmount - summit.poison_count, poisonBalance, remainingCap));
+    // }
 
     let extraLifePotions = 0;
     if (extraLifeStrategy === 'after_capture') {
