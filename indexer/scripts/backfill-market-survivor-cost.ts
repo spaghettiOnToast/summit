@@ -140,40 +140,45 @@ async function getBlockTimestamp(blockNumber: number): Promise<Date> {
 }
 
 async function main() {
-  const client = new pg.Client({ connectionString: DATABASE_URL });
+  // Use a short-lived connection for initial queries, then close before long RPC work
+  let client = new pg.Client({ connectionString: DATABASE_URL });
   await client.connect();
 
-  try {
-    // 1. Find what market logs already exist (and track which have zero survivor_cost)
-    const existingRes = await client.query(
-      `SELECT id, transaction_hash, sub_category, (data->>'token')::text as token,
-              (data->>'survivor_cost')::numeric as survivor_cost
-       FROM summit_log
-       WHERE sub_category IN ('Bought Potions', 'Sold Potions')`
-    );
-    const existingTxKeys = new Set(
-      existingRes.rows.map((r: { transaction_hash: string; token: string; sub_category: string }) =>
-        `${r.transaction_hash}:${r.token}:${r.sub_category}`)
-    );
-    // Track rows that need survivor_cost updates (existing rows with cost = 0)
-    const zeroCostRows = new Map<string, string>(); // txKey -> row id
-    for (const r of existingRes.rows as Array<{ id: string; transaction_hash: string; token: string; sub_category: string; survivor_cost: number }>) {
-      if (Number(r.survivor_cost) === 0) {
-        zeroCostRows.set(`${r.transaction_hash}:${r.token}:${r.sub_category}`, r.id);
-      }
+  // 1. Find what market logs already exist (and track which have zero survivor_cost)
+  const existingRes = await client.query(
+    `SELECT id, transaction_hash, sub_category, (data->>'token')::text as token,
+            (data->>'survivor_cost')::numeric as survivor_cost
+     FROM summit_log
+     WHERE sub_category IN ('Bought Potions', 'Sold Potions')`
+  );
+  const existingTxKeys = new Set(
+    existingRes.rows.map((r: { transaction_hash: string; token: string; sub_category: string }) =>
+      `${r.transaction_hash}:${r.token}:${r.sub_category}`)
+  );
+  // Track rows that need survivor_cost updates (existing rows with cost = 0)
+  const zeroCostRows = new Map<string, string>(); // txKey -> row id
+  for (const r of existingRes.rows as Array<{ id: string; transaction_hash: string; token: string; sub_category: string; survivor_cost: number }>) {
+    if (Number(r.survivor_cost) === 0) {
+      zeroCostRows.set(`${r.transaction_hash}:${r.token}:${r.sub_category}`, r.id);
     }
-    console.log(`[Backfill] ${existingRes.rows.length} market logs already exist (${zeroCostRows.size} with zero survivor_cost)`);
+  }
+  console.log(`[Backfill] ${existingRes.rows.length} market logs already exist (${zeroCostRows.size} with zero survivor_cost)`);
 
-    // 2. Determine block range to scan
-    // Use the full range where market events could exist
-    const rangeRes = await client.query(
-      `SELECT MAX(block_number) as max_block FROM summit_log`
-    );
-    const maxBlock = Number(rangeRes.rows[0].max_block);
-    // Scan from the indexer's starting block to catch all historical market events
-    const fromBlock = 6_866_000;
-    const toBlock = maxBlock;
-    console.log(`[Backfill] Scanning blocks ${fromBlock} to ${toBlock}`);
+  // 2. Determine block range to scan
+  // Use the full range where market events could exist
+  const rangeRes = await client.query(
+    `SELECT MAX(block_number) as max_block FROM summit_log`
+  );
+  const maxBlock = Number(rangeRes.rows[0].max_block);
+  // Scan from the indexer's starting block to catch all historical market events
+  const fromBlock = 6_866_000;
+  const toBlock = maxBlock;
+  console.log(`[Backfill] Scanning blocks ${fromBlock} to ${toBlock}`);
+
+  // Close the DB connection during the long RPC fetch phase to avoid idle timeouts
+  await client.end();
+
+  try {
 
     // 3. Fetch Transfer events for all potion tokens
     console.log(`[Backfill] Fetching potion Transfer events from RPC...`);
@@ -337,6 +342,10 @@ async function main() {
       console.log(`\n[DRY RUN] Would insert ${newRows.length} rows and update ${updateRows.length} rows. Re-run without --dry-run to execute.`);
       return;
     }
+
+    // Reconnect to DB for the write phase
+    client = new pg.Client({ connectionString: DATABASE_URL });
+    await client.connect();
 
     // 7. Fetch block timestamps and insert new rows
     if (newRows.length > 0) {
