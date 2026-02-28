@@ -27,6 +27,8 @@ const pool = new pg.Pool({
   max: parseInt(process.env.DB_POOL_MAX || "15", 10),
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10_000,
   ssl: databaseSsl === "true" || (process.env.NODE_ENV === "production" && typeof databaseSsl === "undefined")
     ? { rejectUnauthorized: false }
     : undefined,

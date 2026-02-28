@@ -862,6 +862,8 @@ export default function indexer(runtimeConfig: ApibaraRuntimeConfig) {
       max: 5,
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 10_000,
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10_000,
     },
   });
 
