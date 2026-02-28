@@ -515,7 +515,7 @@ app.get("/logs", async (c) => {
   const conditions = [];
   if (categories.length > 0) conditions.push(inArray(summit_log.category, categories));
   if (subCategories.length > 0) conditions.push(inArray(summit_log.sub_category, subCategories));
-  if (player) conditions.push(eq(summit_log.player, player));
+  if (player) conditions.push(eq(summit_log.player, normalizeAddress(player)));
 
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
@@ -825,6 +825,29 @@ app.get("/consumables/supply", async (c) => {
   });
 });
 
+/**
+ * GET /consumables/:owner - Get consumable token balances for a specific owner
+ */
+app.get("/consumables/:owner", async (c) => {
+  const owner = normalizeAddress(c.req.param("owner"));
+
+  const result = await db
+    .select()
+    .from(consumables)
+    .where(eq(consumables.owner, owner));
+
+  const row = result[0];
+
+  return c.json({
+    owner,
+    xlife: row ? Number(row.xlife_count) : 0,
+    attack: row ? Number(row.attack_count) : 0,
+    revive: row ? Number(row.revive_count) : 0,
+    poison: row ? Number(row.poison_count) : 0,
+    updated_at: row?.updated_at?.toISOString() ?? null,
+  });
+});
+
 // Root endpoint
 app.get("/", (c) => {
   const endpoints: Record<string, unknown> = {
@@ -845,6 +868,7 @@ app.get("/", (c) => {
     },
     consumables: {
       supply: "GET /consumables/supply",
+      by_owner: "GET /consumables/:owner",
     },
     websocket: {
       endpoint: "WS /ws",
