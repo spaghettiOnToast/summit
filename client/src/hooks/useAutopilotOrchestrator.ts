@@ -315,10 +315,17 @@ export function useAutopilotOrchestrator() {
 
   // Main autopilot attack + conservative poison + extra life logic
   useEffect(() => {
-    if (!autopilotEnabled || attackInProgress || applyingPotions || !summit) return;
+    if (!autopilotEnabled || attackInProgress || applyingPotions || !summit) {
+      if (autopilotEnabled) {
+        console.log('[Autopilot] Blocked:', { attackInProgress, applyingPotions, hasSummit: !!summit });
+      }
+      return;
+    }
 
     if (!collectionWithCombat || collectionWithCombat.length === 0) {
-      setAutopilotLog('No eligible beasts available');
+      const msg = 'No eligible beasts available';
+      console.log('[Autopilot]', msg, { revivePotionsUsed, revivePotionMax, attackPotionsUsed, attackPotionMax, collectionSize: collection.length });
+      setAutopilotLog(msg);
       return;
     }
 
@@ -337,6 +344,8 @@ export function useAutopilotOrchestrator() {
 
     if (shouldSkipSummit) return;
 
+    // Conservative poison — if fired, wait for completion before attacking
+    let poisonFired = false;
     if (poisonStrategy === 'conservative'
       && summit.beast.extra_lives >= poisonConservativeExtraLivesTrigger
       && summit.poison_count < poisonConservativeAmount
@@ -348,7 +357,15 @@ export function useAutopilotOrchestrator() {
       const amount = Math.min(poisonConservativeAmount - summit.poison_count, poisonBalance, remainingCap);
       if (amount > 0 && handleApplyPoison(amount)) {
         poisonedTokenIdRef.current = summit.beast.token_id;
+        poisonFired = true;
       }
+    }
+
+    // If we just fired poison, applyingPotions is now true — wait for it
+    // to complete before attacking (effect will re-trigger via applyingPotions dep)
+    if (poisonFired) {
+      console.log('[Autopilot] Conservative poison applied, deferring attack');
+      return;
     }
 
     let extraLifePotions = 0;
@@ -362,23 +379,30 @@ export function useAutopilotOrchestrator() {
       setAutopilotLog('Attack strategy: never');
       return;
     } else if (attackStrategy === 'all_out') {
+      console.log('[Autopilot] Firing all_out attack', { beasts: collectionWithCombat.length, extraLifePotions });
       handleAttackUntilCapture(extraLifePotions);
     } else if (attackStrategy === 'guaranteed') {
       const beasts = collectionWithCombat.slice(0, maxBeastsPerAttack);
 
       if (beasts.length === 0) {
-        setAutopilotLog('No beasts in range');
+        const msg = 'No beasts in range';
+        console.log('[Autopilot]', msg);
+        setAutopilotLog(msg);
         return;
       }
 
       const totalSummitHealth = ((summit.beast.health + summit.beast.bonus_health) * summit.beast.extra_lives) + summit.beast.current_health;
       const totalEstimatedDamage = beasts.reduce((acc, beast) => acc + (beast.combat?.estimatedDamage ?? 0), 0);
       if (totalEstimatedDamage < (totalSummitHealth * 1.1)) {
-        setAutopilotLog(`Damage insufficient: ${Math.floor(totalEstimatedDamage)} / ${Math.floor(totalSummitHealth * 1.1)} needed`);
+        const msg = `Damage insufficient: ${Math.floor(totalEstimatedDamage)} / ${Math.floor(totalSummitHealth * 1.1)} needed`;
+        console.log('[Autopilot]', msg, { beasts: beasts.length, revivePotionsUsed, attackPotionsUsed });
+        setAutopilotLog(msg);
         return;
       }
 
-      setAutopilotLog(`Attacking with ${beasts.length} beast${beasts.length > 1 ? 's' : ''}...`);
+      const msg = `Attacking with ${beasts.length} beast${beasts.length > 1 ? 's' : ''}...`;
+      console.log('[Autopilot]', msg, { extraLifePotions, attackPotions: beasts[0]?.combat?.attackPotions || 0 });
+      setAutopilotLog(msg);
       executeGameAction({
         type: 'attack',
         beasts: beasts.map((beast: Beast) => ([beast, 1, beast.combat?.attackPotions || 0])),
