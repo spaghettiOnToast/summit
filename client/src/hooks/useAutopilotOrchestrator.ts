@@ -315,7 +315,12 @@ export function useAutopilotOrchestrator() {
 
   // Main autopilot attack + conservative poison + extra life logic
   useEffect(() => {
-    if (!autopilotEnabled || attackInProgress || !collectionWithCombat || !summit) return;
+    if (!autopilotEnabled || attackInProgress || applyingPotions || !summit) return;
+
+    if (!collectionWithCombat || collectionWithCombat.length === 0) {
+      setAutopilotLog('No eligible beasts available');
+      return;
+    }
 
     const myBeast = collection.find((beast: Beast) => beast.token_id === summit?.beast.token_id);
 
@@ -354,18 +359,26 @@ export function useAutopilotOrchestrator() {
     }
 
     if (attackStrategy === 'never') {
+      setAutopilotLog('Attack strategy: never');
       return;
     } else if (attackStrategy === 'all_out') {
       handleAttackUntilCapture(extraLifePotions);
     } else if (attackStrategy === 'guaranteed') {
       const beasts = collectionWithCombat.slice(0, maxBeastsPerAttack);
 
-      const totalSummitHealth = ((summit.beast.health + summit.beast.bonus_health) * summit.beast.extra_lives) + summit.beast.current_health;
-      const totalEstimatedDamage = beasts.reduce((acc, beast) => acc + (beast.combat?.estimatedDamage ?? 0), 0);
-      if (totalEstimatedDamage < (totalSummitHealth * 1.1)) {
+      if (beasts.length === 0) {
+        setAutopilotLog('No beasts in range');
         return;
       }
 
+      const totalSummitHealth = ((summit.beast.health + summit.beast.bonus_health) * summit.beast.extra_lives) + summit.beast.current_health;
+      const totalEstimatedDamage = beasts.reduce((acc, beast) => acc + (beast.combat?.estimatedDamage ?? 0), 0);
+      if (totalEstimatedDamage < (totalSummitHealth * 1.1)) {
+        setAutopilotLog(`Damage insufficient: ${Math.floor(totalEstimatedDamage)} / ${Math.floor(totalSummitHealth * 1.1)} needed`);
+        return;
+      }
+
+      setAutopilotLog(`Attacking with ${beasts.length} beast${beasts.length > 1 ? 's' : ''}...`);
       executeGameAction({
         type: 'attack',
         beasts: beasts.map((beast: Beast) => ([beast, 1, beast.combat?.attackPotions || 0])),
@@ -376,7 +389,7 @@ export function useAutopilotOrchestrator() {
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [collectionWithCombat, autopilotEnabled, summit?.beast.extra_lives, triggerAutopilot]);
+  }, [collectionWithCombat, autopilotEnabled, summit?.beast.extra_lives, triggerAutopilot, attackInProgress, applyingPotions]);
 
   // Re-trigger autopilot when summit beast is about to die (0 extra lives, 1 HP)
   useEffect(() => {

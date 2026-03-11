@@ -40,12 +40,3 @@ declare module '*.bmp' {
   export default content;
 }
 
-interface ImportMetaEnv {
-  readonly VITE_PUBLIC_POSTHOG_KEY: string;
-  readonly VITE_PUBLIC_POSTHOG_HOST: string;
-  // Add other env variables here as needed
-}
-
-interface ImportMeta {
-  readonly env: ImportMetaEnv;
-}
