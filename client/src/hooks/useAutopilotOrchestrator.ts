@@ -61,7 +61,7 @@ export function useAutopilotOrchestrator() {
   const attackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Safety timeout: force-clear attackInProgress if wallet hangs
-  const ATTACK_TIMEOUT_MS = 120_000; // 2 minutes
+  const ATTACK_TIMEOUT_MS = 90_000; // 90 seconds (wallet has its own 60s timeout)
 
   const startAttackTimeout = useCallback(() => {
     if (attackTimeoutRef.current) clearTimeout(attackTimeoutRef.current);
