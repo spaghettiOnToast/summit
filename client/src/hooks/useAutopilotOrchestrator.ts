@@ -3,7 +3,7 @@ import { MAX_BEASTS_PER_ATTACK, useGameDirector } from '@/contexts/GameDirector'
 import { useAutopilotStore } from '@/stores/autopilotStore';
 import { useGameStore } from '@/stores/gameStore';
 import type { Beast } from '@/types/game';
-import React, { useEffect, useMemo, useReducer } from 'react';
+import React, { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
 import {
   calculateRevivalRequired,
   isOwnerIgnored, isOwnerTargetedForPoison, getTargetedPoisonAmount,
@@ -58,6 +58,29 @@ export function useAutopilotOrchestrator() {
 
   const [triggerAutopilot, setTriggerAutopilot] = useReducer((x: number) => x + 1, 0);
   const poisonedTokenIdRef = React.useRef<number | null>(null);
+  const attackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Safety timeout: force-clear attackInProgress if wallet hangs
+  const ATTACK_TIMEOUT_MS = 120_000; // 2 minutes
+
+  const startAttackTimeout = useCallback(() => {
+    if (attackTimeoutRef.current) clearTimeout(attackTimeoutRef.current);
+    attackTimeoutRef.current = setTimeout(() => {
+      const { attackInProgress: stillAttacking } = useGameStore.getState();
+      if (stillAttacking) {
+        console.warn('[Autopilot] Attack timed out after 2min — force-clearing attackInProgress');
+        setAttackInProgress(false);
+      }
+      attackTimeoutRef.current = null;
+    }, ATTACK_TIMEOUT_MS);
+  }, [setAttackInProgress]);
+
+  const clearAttackTimeout = useCallback(() => {
+    if (attackTimeoutRef.current) {
+      clearTimeout(attackTimeoutRef.current);
+      attackTimeoutRef.current = null;
+    }
+  }, []);
 
   const isSavage = Boolean(collection.find(beast => beast.token_id === summit?.beast?.token_id));
   const revivalPotionsRequired = calculateRevivalRequired(selectedBeasts);
@@ -123,6 +146,7 @@ export function useAutopilotOrchestrator() {
 
     setBattleEvents([]);
     setAttackInProgress(true);
+    startAttackTimeout();
 
     try {
       const allBeasts: [Beast, number, number][] = collectionWithCombat.map((beast: Beast) => [beast, 1, beast.combat?.attackPotions || 0]);
@@ -194,6 +218,7 @@ export function useAutopilotOrchestrator() {
     } catch (error) {
       console.error('[Autopilot] all_out attack error:', error);
     } finally {
+      clearAttackTimeout();
       setAttackInProgress(false);
     }
   };
@@ -207,6 +232,7 @@ export function useAutopilotOrchestrator() {
   };
 
   const stopAutopilot = () => {
+    clearAttackTimeout();
     setAutopilotEnabled(false);
   };
 
@@ -406,6 +432,7 @@ export function useAutopilotOrchestrator() {
       const msg = `Attacking with ${beasts.length} beast${beasts.length > 1 ? 's' : ''}...`;
       console.log('[Autopilot]', msg, { extraLifePotions, attackPotions: beasts[0]?.combat?.attackPotions || 0 });
       setAutopilotLog(msg);
+      startAttackTimeout();
       executeGameAction({
         type: 'attack',
         beasts: beasts.map((beast: Beast) => ([beast, 1, beast.combat?.attackPotions || 0])),
@@ -413,8 +440,11 @@ export function useAutopilotOrchestrator() {
         vrf: true,
         extraLifePotions: extraLifePotions,
         attackPotions: beasts[0]?.combat?.attackPotions || 0
+      }).then(() => {
+        clearAttackTimeout();
       }).catch((error) => {
         console.error('[Autopilot] guaranteed attack error:', error);
+        clearAttackTimeout();
         setAttackInProgress(false);
       });
     }
