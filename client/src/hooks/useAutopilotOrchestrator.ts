@@ -59,6 +59,7 @@ export function useAutopilotOrchestrator() {
   const [triggerAutopilot, setTriggerAutopilot] = useReducer((x: number) => x + 1, 0);
   const poisonedTokenIdRef = React.useRef<number | null>(null);
   const attackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const attackingRef = useRef(false);
 
   // Safety timeout: force-clear attackInProgress if wallet hangs
   const ATTACK_TIMEOUT_MS = 90_000; // 90 seconds (wallet has its own 60s timeout)
@@ -142,8 +143,9 @@ export function useAutopilotOrchestrator() {
 
   const handleAttackUntilCapture = async (extraLifePotions: number) => {
     const { attackInProgress: alreadyAttacking, applyingPotions: alreadyApplying } = useGameStore.getState();
-    if (!enableAttack || alreadyAttacking || alreadyApplying) return;
+    if (!enableAttack || alreadyAttacking || alreadyApplying || attackingRef.current) return;
 
+    attackingRef.current = true;
     setBattleEvents([]);
     setAttackInProgress(true);
     startAttackTimeout();
@@ -218,6 +220,7 @@ export function useAutopilotOrchestrator() {
     } catch (error) {
       console.error('[Autopilot] all_out attack error:', error);
     } finally {
+      attackingRef.current = false;
       clearAttackTimeout();
       setAttackInProgress(false);
     }
@@ -429,6 +432,9 @@ export function useAutopilotOrchestrator() {
         return;
       }
 
+      if (attackingRef.current) return;
+      attackingRef.current = true;
+
       const msg = `Attacking with ${beasts.length} beast${beasts.length > 1 ? 's' : ''}...`;
       console.log('[Autopilot]', msg, { extraLifePotions, attackPotions: beasts[0]?.combat?.attackPotions || 0 });
       setAutopilotLog(msg);
@@ -446,6 +452,8 @@ export function useAutopilotOrchestrator() {
         console.error('[Autopilot] guaranteed attack error:', error);
         clearAttackTimeout();
         setAttackInProgress(false);
+      }).finally(() => {
+        attackingRef.current = false;
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
