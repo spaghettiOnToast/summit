@@ -668,6 +668,11 @@ export const GameDirector = ({ children }: PropsWithChildren) => {
         }));
       }
 
+      if (action.type === "attack") {
+        setAttackInProgress(false);
+      } else if (action.type === "apply_poison" || action.type === "add_extra_life") {
+        setApplyingPotions(false);
+      }
       setActionFailed();
       return false;
     }
