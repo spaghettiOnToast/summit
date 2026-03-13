@@ -148,7 +148,9 @@ export function useAutopilotOrchestrator() {
       });
       if (!result) setCooldown();
     } finally {
+      await delay(TX_SETTLE_MS);
       executingRef.current = false;
+      setTriggerAutopilot(); // Re-trigger effect since ref change won't cause re-render
     }
   };
 
@@ -169,7 +171,9 @@ export function useAutopilotOrchestrator() {
       if (!result) setCooldown();
       return !!result;
     } finally {
+      await delay(TX_SETTLE_MS);
       executingRef.current = false;
+      setTriggerAutopilot();
     }
   };
 
@@ -256,7 +260,12 @@ export function useAutopilotOrchestrator() {
         });
 
         if (!result) {
-          setCooldown();
+          // result is false for both capture (expected) and failure
+          // Check if we captured by seeing if our beast is now on summit
+          const postSummit = useGameStore.getState().summit;
+          const postCollection = useGameStore.getState().collection;
+          const didCapture = postSummit && postCollection.some((b: Beast) => b.token_id === postSummit.beast.token_id);
+          if (!didCapture) setCooldown();
           break;
         }
       }
@@ -265,9 +274,11 @@ export function useAutopilotOrchestrator() {
       setCooldown();
     } finally {
       attackingRef.current = false;
-      executingRef.current = false;
       clearAttackTimeout();
       setAttackInProgress(false);
+      await delay(TX_SETTLE_MS);
+      executingRef.current = false;
+      setTriggerAutopilot();
     }
   };
 
@@ -402,9 +413,9 @@ export function useAutopilotOrchestrator() {
 
   // Main autopilot attack + conservative poison + extra life logic
   useEffect(() => {
-    if (!autopilotEnabled || attackInProgress || applyingPotions || !summit) {
+    if (!autopilotEnabled || attackInProgress || applyingPotions || !summit || executingRef.current) {
       if (autopilotEnabled) {
-        console.log('[Autopilot] Blocked:', { attackInProgress, applyingPotions, hasSummit: !!summit });
+        console.log('[Autopilot] Blocked:', { attackInProgress, applyingPotions, executing: executingRef.current, hasSummit: !!summit });
       }
       return;
     }
@@ -511,16 +522,22 @@ export function useAutopilotOrchestrator() {
         vrf: true,
         extraLifePotions: extraLifePotions,
         attackPotions: beasts[0]?.combat?.attackPotions || 0
-      }).then(() => {
+      }).then((success) => {
         clearAttackTimeout();
+        if (!success) {
+          setCooldown();
+          setAttackInProgress(false);
+        }
       }).catch((error) => {
         console.error('[Autopilot] guaranteed attack error:', error);
         setCooldown();
         clearAttackTimeout();
         setAttackInProgress(false);
-      }).finally(() => {
+      }).finally(async () => {
         attackingRef.current = false;
+        await delay(TX_SETTLE_MS);
         executingRef.current = false;
+        setTriggerAutopilot();
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

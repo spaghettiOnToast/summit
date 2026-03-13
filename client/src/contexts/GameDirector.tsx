@@ -668,7 +668,7 @@ export const GameDirector = ({ children }: PropsWithChildren) => {
         }));
       }
 
-      if (action.type === "attack") {
+      if (action.type === "attack" || action.type === "attack_until_capture") {
         setAttackInProgress(false);
       } else if (action.type === "apply_poison" || action.type === "add_extra_life") {
         setApplyingPotions(false);
@@ -726,8 +726,9 @@ export const GameDirector = ({ children }: PropsWithChildren) => {
       } else {
         setAttackInProgress(false);
       }
-    } else if (action.type === "attack_until_capture" && captured) {
-      return false;
+    } else if (action.type === "attack_until_capture") {
+      // Return false on capture to signal the orchestrator to stop batching
+      if (captured) return false;
     } else if (action.type === "add_extra_life") {
       const extraLifePotions = action.extraLifePotions ?? 0;
       setTokenBalances((prev: Record<string, number>) => ({
