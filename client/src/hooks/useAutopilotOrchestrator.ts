@@ -3,6 +3,7 @@ import { MAX_BEASTS_PER_ATTACK, useGameDirector } from '@/contexts/GameDirector'
 import { useAutopilotStore } from '@/stores/autopilotStore';
 import { useGameStore } from '@/stores/gameStore';
 import type { Beast } from '@/types/game';
+import { delay } from '@/utils/utils';
 import React, { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
 import {
   calculateRevivalRequired,
@@ -60,6 +61,24 @@ export function useAutopilotOrchestrator() {
   const poisonedTokenIdRef = React.useRef<number | null>(null);
   const attackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attackingRef = useRef(false);
+  const executingRef = useRef(false); // Global lock to prevent concurrent wallet calls
+  const cooldownUntilRef = useRef(0);
+  const lastSummitBeastRef = useRef<number | null>(null);
+
+  // Delay between sequential wallet calls to let the controller settle
+  const TX_SETTLE_MS = 3_000;
+
+  // Cooldown after failures to prevent rapid-fire retries
+  const COOLDOWN_MS = 30_000; // 30 seconds before retrying after a failure
+
+  const setCooldown = useCallback(() => {
+    cooldownUntilRef.current = Date.now() + COOLDOWN_MS;
+    console.log(`[Autopilot] Cooldown set for ${COOLDOWN_MS / 1000}s`);
+  }, []);
+
+  const isOnCooldown = useCallback(() => {
+    return Date.now() < cooldownUntilRef.current;
+  }, []);
 
   // Safety timeout: force-clear attackInProgress if wallet hangs
   const ATTACK_TIMEOUT_MS = 90_000; // 90 seconds (wallet has its own 60s timeout)
@@ -69,12 +88,13 @@ export function useAutopilotOrchestrator() {
     attackTimeoutRef.current = setTimeout(() => {
       const { attackInProgress: stillAttacking } = useGameStore.getState();
       if (stillAttacking) {
-        console.warn('[Autopilot] Attack timed out after 2min — force-clearing attackInProgress');
+        console.warn('[Autopilot] Attack timed out after 90s — force-clearing attackInProgress');
         setAttackInProgress(false);
       }
+      setCooldown();
       attackTimeoutRef.current = null;
     }, ATTACK_TIMEOUT_MS);
-  }, [setAttackInProgress]);
+  }, [setAttackInProgress, setCooldown]);
 
   const clearAttackTimeout = useCallback(() => {
     if (attackTimeoutRef.current) {
@@ -113,39 +133,52 @@ export function useAutopilotOrchestrator() {
 
   // ── Handlers ─────────────────────────────────────────────────────────
 
-  const handleApplyExtraLife = (amount: number) => {
-    if (!summit?.beast || !isSavage || applyingPotions || amount === 0) return;
+  const handleApplyExtraLife = async (amount: number) => {
+    if (!summit?.beast || !isSavage || applyingPotions || amount === 0 || executingRef.current) return;
 
+    executingRef.current = true;
     setApplyingPotions(true);
     setAutopilotLog('Adding extra lives...');
 
-    executeGameAction({
-      type: 'add_extra_life',
-      beastId: summit.beast.token_id,
-      extraLifePotions: amount,
-    });
+    try {
+      const result = await executeGameAction({
+        type: 'add_extra_life',
+        beastId: summit.beast.token_id,
+        extraLifePotions: amount,
+      });
+      if (!result) setCooldown();
+    } finally {
+      executingRef.current = false;
+    }
   };
 
-  const handleApplyPoison = (amount: number, beastId?: number): boolean => {
+  const handleApplyPoison = async (amount: number, beastId?: number): Promise<boolean> => {
     const targetId = beastId ?? summit?.beast?.token_id;
-    if (!targetId || applyingPotions || amount === 0) return false;
+    if (!targetId || applyingPotions || amount === 0 || executingRef.current) return false;
 
+    executingRef.current = true;
     setApplyingPotions(true);
     setAutopilotLog('Applying poison...');
 
-    executeGameAction({
-      type: 'apply_poison',
-      beastId: targetId,
-      count: amount,
-    });
-    return true;
+    try {
+      const result = await executeGameAction({
+        type: 'apply_poison',
+        beastId: targetId,
+        count: amount,
+      });
+      if (!result) setCooldown();
+      return !!result;
+    } finally {
+      executingRef.current = false;
+    }
   };
 
   const handleAttackUntilCapture = async (extraLifePotions: number) => {
     const { attackInProgress: alreadyAttacking, applyingPotions: alreadyApplying } = useGameStore.getState();
-    if (!enableAttack || alreadyAttacking || alreadyApplying || attackingRef.current) return;
+    if (!enableAttack || alreadyAttacking || alreadyApplying || attackingRef.current || executingRef.current || isOnCooldown()) return;
 
     attackingRef.current = true;
+    executingRef.current = true;
     setBattleEvents([]);
     setAttackInProgress(true);
     startAttackTimeout();
@@ -182,29 +215,38 @@ export function useAutopilotOrchestrator() {
           }
 
           // Fire targeted poison between batches (once per target per sequence)
+          // Release executingRef so handleApplyPoison can acquire it, then re-acquire
           if (!poisonedThisSequence.has(currentSummit.beast.token_id)) {
             const { poisonTotalMax: ptm, poisonPotionsUsed: ppu, targetedPoisonBeasts: tpb } = useAutopilotStore.getState();
+            let poisonAmount = 0;
+            let poisonTarget = currentSummit.beast.token_id;
+
             const isBeastTarget = tpb.length > 0 && isBeastTargetedForPoison(currentSummit.beast.token_id, tpb);
             if (isBeastTarget) {
               const beastAmount = getTargetedBeastPoisonAmount(currentSummit.beast.token_id, tpb);
               const remainingCap = Math.max(0, ptm - ppu);
               const pb = tokenBalances?.["POISON"] || 0;
-              const amount = Math.min(beastAmount, pb, remainingCap);
-              if (amount > 0) {
-                handleApplyPoison(amount, currentSummit.beast.token_id);
-                poisonedThisSequence.add(currentSummit.beast.token_id);
-              }
+              poisonAmount = Math.min(beastAmount, pb, remainingCap);
             } else if (tpp.length > 0 && isOwnerTargetedForPoison(currentSummit.owner, tpp)) {
               const playerAmount = getTargetedPoisonAmount(currentSummit.owner, tpp);
               const remainingCap = Math.max(0, ptm - ppu);
               const pb = tokenBalances?.["POISON"] || 0;
-              const amount = Math.min(playerAmount, pb, remainingCap);
-              if (amount > 0) {
-                handleApplyPoison(amount, currentSummit.beast.token_id);
-                poisonedThisSequence.add(currentSummit.beast.token_id);
-              }
+              poisonAmount = Math.min(playerAmount, pb, remainingCap);
+            }
+
+            if (poisonAmount > 0) {
+              executingRef.current = false; // Release lock for poison call
+              await handleApplyPoison(poisonAmount, poisonTarget);
+              await delay(TX_SETTLE_MS);
+              executingRef.current = true; // Re-acquire for next batch
+              poisonedThisSequence.add(currentSummit.beast.token_id);
             }
           }
+        }
+
+        // Let the controller settle between batches
+        if (batches.indexOf(batch) > 0) {
+          await delay(TX_SETTLE_MS);
         }
 
         const result = await executeGameAction({
@@ -214,13 +256,16 @@ export function useAutopilotOrchestrator() {
         });
 
         if (!result) {
+          setCooldown();
           break;
         }
       }
     } catch (error) {
       console.error('[Autopilot] all_out attack error:', error);
+      setCooldown();
     } finally {
       attackingRef.current = false;
+      executingRef.current = false;
       clearAttackTimeout();
       setAttackInProgress(false);
     }
@@ -297,7 +342,7 @@ export function useAutopilotOrchestrator() {
     if (!autopilotEnabled || !summit?.beast) return;
 
     const { attackInProgress: attacking, applyingPotions: applying } = useGameStore.getState();
-    if (attacking || applying) return;
+    if (attacking || applying || executingRef.current) return;
 
     const myBeast = collection.find((beast: Beast) => beast.token_id === summit.beast.token_id);
     if (myBeast) return;
@@ -339,11 +384,21 @@ export function useAutopilotOrchestrator() {
     const remainingCap = Math.max(0, poisonTotalMax - poisonPotionsUsed);
     const pb = tokenBalances?.["POISON"] || 0;
     const amount = Math.min(poisonAggressiveAmount, pb, remainingCap);
-    if (amount > 0 && handleApplyPoison(amount, summit.beast.token_id)) {
-      poisonedTokenIdRef.current = summit.beast.token_id;
+    if (amount > 0) {
+      handleApplyPoison(amount, summit.beast.token_id).then((fired) => {
+        if (fired) poisonedTokenIdRef.current = summit.beast.token_id;
+      });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [summit?.beast?.token_id, autopilotEnabled, targetedPoisonPlayers, targetedPoisonBeasts, poisonTotalMax]);
+
+  // Clear cooldown when summit beast changes (new target = fresh attempt)
+  useEffect(() => {
+    if (summit?.beast?.token_id && summit.beast.token_id !== lastSummitBeastRef.current) {
+      lastSummitBeastRef.current = summit.beast.token_id;
+      cooldownUntilRef.current = 0;
+    }
+  }, [summit?.beast?.token_id]);
 
   // Main autopilot attack + conservative poison + extra life logic
   useEffect(() => {
@@ -351,6 +406,12 @@ export function useAutopilotOrchestrator() {
       if (autopilotEnabled) {
         console.log('[Autopilot] Blocked:', { attackInProgress, applyingPotions, hasSummit: !!summit });
       }
+      return;
+    }
+
+    if (isOnCooldown()) {
+      const remaining = Math.ceil((cooldownUntilRef.current - Date.now()) / 1000);
+      setAutopilotLog(`Cooldown: ${remaining}s`);
       return;
     }
 
@@ -387,7 +448,10 @@ export function useAutopilotOrchestrator() {
       const remainingCap = Math.max(0, poisonTotalMax - poisonPotionsUsed);
       const poisonBalance = tokenBalances?.["POISON"] || 0;
       const amount = Math.min(poisonConservativeAmount - summit.poison_count, poisonBalance, remainingCap);
-      if (amount > 0 && handleApplyPoison(amount)) {
+      if (amount > 0) {
+        // handleApplyPoison is async but executingRef guards concurrency;
+        // the effect will re-trigger via applyingPotions dep when it completes
+        handleApplyPoison(amount);
         poisonedTokenIdRef.current = summit.beast.token_id;
         poisonFired = true;
       }
@@ -432,8 +496,9 @@ export function useAutopilotOrchestrator() {
         return;
       }
 
-      if (attackingRef.current) return;
+      if (attackingRef.current || executingRef.current) return;
       attackingRef.current = true;
+      executingRef.current = true;
 
       const msg = `Attacking with ${beasts.length} beast${beasts.length > 1 ? 's' : ''}...`;
       console.log('[Autopilot]', msg, { extraLifePotions, attackPotions: beasts[0]?.combat?.attackPotions || 0 });
@@ -450,10 +515,12 @@ export function useAutopilotOrchestrator() {
         clearAttackTimeout();
       }).catch((error) => {
         console.error('[Autopilot] guaranteed attack error:', error);
+        setCooldown();
         clearAttackTimeout();
         setAttackInProgress(false);
       }).finally(() => {
         attackingRef.current = false;
+        executingRef.current = false;
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
