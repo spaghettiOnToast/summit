@@ -100,14 +100,22 @@ export const useSystemCalls = () => {
 
     try {
       console.log('[SystemCalls] Submitting tx...', { calls: calls.length });
+
+      // Single timeout covering the entire tx lifecycle (execute + receipt)
+      const TX_LIFECYCLE_TIMEOUT = 90_000;
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Transaction timed out after 90s')), TX_LIFECYCLE_TIMEOUT)
+      );
+
       const tx = await Promise.race([
         account.execute(calls),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Wallet execute timed out after 60s')), 60_000)
-        ),
+        timeoutPromise,
       ]);
       console.log('[SystemCalls] Tx submitted:', tx.transaction_hash);
-      const receipt = await waitForTransaction(tx.transaction_hash, 0);
+      const receipt = await Promise.race([
+        waitForTransaction(tx.transaction_hash, 0),
+        timeoutPromise,
+      ]);
       console.log('[SystemCalls] Receipt:', receipt.execution_status);
 
       if (receipt.execution_status === "REVERTED") {
