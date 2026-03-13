@@ -14,7 +14,8 @@ import {
 
 // ── Constants ────────────────────────────────────────────────────────
 const TICK_MS = 5_000;           // Autopilot polling interval
-const TX_SETTLE_MS = 3_000;      // Delay between wallet calls
+const TX_SETTLE_MS = 3_000;      // Delay between potion wallet calls
+const POST_ATTACK_SETTLE_MS = 12_000; // Longer delay after attacks (controller needs time)
 const COOLDOWN_MS = 30_000;      // Backoff after failures
 const ATTACK_TIMEOUT_MS = 90_000; // Safety timeout for stuck attacks
 
@@ -150,7 +151,7 @@ export function useAutopilotOrchestrator() {
       gs.setAttackInProgress(false);
       return false;
     } finally {
-      await delay(TX_SETTLE_MS);
+      await delay(POST_ATTACK_SETTLE_MS);
     }
   };
 
@@ -171,7 +172,7 @@ export function useAutopilotOrchestrator() {
 
       for (let i = 0; i < batches.length; i++) {
         // Settle between batches
-        if (i > 0) await delay(TX_SETTLE_MS);
+        if (i > 0) await delay(POST_ATTACK_SETTLE_MS);
 
         // Re-read state between batches
         const currentSummit = useGameStore.getState().summit;
@@ -220,7 +221,7 @@ export function useAutopilotOrchestrator() {
       console.log('[Autopilot] doAttackUntilCapture: finally — clearing attackInProgress');
       clearAttackTimeout();
       gs.setAttackInProgress(false);
-      await delay(TX_SETTLE_MS);
+      await delay(POST_ATTACK_SETTLE_MS);
     }
   };
 
