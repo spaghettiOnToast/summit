@@ -717,18 +717,18 @@ export const GameDirector = ({ children }: PropsWithChildren) => {
       }
     }
 
-    if (action.type === "attack") {
-      if (action.pauseUpdates) {
-        const battleEvents: BattleEvent[] = events
-          .filter(isBattleEvent)
-          .map(({ componentName: _componentName, ...battleEvent }) => battleEvent);
-        setBattleEvents(battleEvents);
-      } else {
+    if (action.type === "attack" || action.type === "attack_until_capture") {
+      // Always store battle events so the UI shows attack results
+      const battleEvents: BattleEvent[] = events
+        .filter(isBattleEvent)
+        .map(({ componentName: _componentName, ...battleEvent }) => battleEvent);
+      setBattleEvents(battleEvents);
+
+      if (action.type === "attack" && !action.pauseUpdates) {
         setAttackInProgress(false);
+      } else if (action.type === "attack_until_capture" && captured) {
+        return false;
       }
-    } else if (action.type === "attack_until_capture") {
-      // Return false on capture to signal the orchestrator to stop batching
-      if (captured) return false;
     } else if (action.type === "add_extra_life") {
       const extraLifePotions = action.extraLifePotions ?? 0;
       setTokenBalances((prev: Record<string, number>) => ({
