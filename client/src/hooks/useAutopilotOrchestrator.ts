@@ -44,6 +44,7 @@ export function useAutopilotOrchestrator() {
 
   // ── Internal refs ────────────────────────────────────────────────
   const executingRef = useRef(false);
+  const executingSinceRef = useRef(0);       // timestamp when executingRef was set
   const cooldownUntilRef = useRef(0);
   const lastSummitBeastRef = useRef<number | null>(null);
   const poisonedTokenIdRef = useRef<number | null>(null);
@@ -127,6 +128,7 @@ export function useAutopilotOrchestrator() {
     gs.setAttackInProgress(true);
     startAttackTimeout();
     try {
+      console.log('[Autopilot] doAttack: dispatching to GameDirector...');
       const result = await executeRef.current({
         type: 'attack',
         beasts: beasts.map((beast: Beast) => [beast, 1, beast.combat?.attackPotions || 0]),
@@ -134,6 +136,7 @@ export function useAutopilotOrchestrator() {
         extraLifePotions,
         attackPotions: beasts[0]?.combat?.attackPotions || 0,
       });
+      console.log('[Autopilot] doAttack: result =', result);
       clearAttackTimeout();
       if (!result) {
         setCooldown();
@@ -192,15 +195,18 @@ export function useAutopilotOrchestrator() {
           }
         }
 
+        console.log(`[Autopilot] doAttackUntilCapture: batch ${i + 1}/${batches.length}, dispatching...`);
         const result = await executeRef.current({
           type: 'attack_until_capture',
           beasts: batches[i],
           extraLifePotions,
         });
+        console.log(`[Autopilot] doAttackUntilCapture: batch ${i + 1} result =`, result);
 
         if (!result) {
           const post = useGameStore.getState();
           const didCapture = post.summit && post.collection.some(b => b.token_id === post.summit!.beast.token_id);
+          console.log('[Autopilot] doAttackUntilCapture: !result, didCapture =', didCapture);
           if (!didCapture) setCooldown();
           break;
         }
@@ -211,6 +217,7 @@ export function useAutopilotOrchestrator() {
       setCooldown();
       return false;
     } finally {
+      console.log('[Autopilot] doAttackUntilCapture: finally — clearing attackInProgress');
       clearAttackTimeout();
       gs.setAttackInProgress(false);
       await delay(TX_SETTLE_MS);
@@ -221,14 +228,32 @@ export function useAutopilotOrchestrator() {
 
   const tick = useCallback(async () => {
     // Hard lock: only one tick runs at a time
-    if (executingRef.current) return;
+    if (executingRef.current) {
+      // Stuck detection: if we've been executing for > ATTACK_TIMEOUT_MS, force-unlock
+      const elapsed = Date.now() - executingSinceRef.current;
+      if (elapsed > ATTACK_TIMEOUT_MS) {
+        console.warn(`[Autopilot] Force-clearing stuck lock after ${Math.round(elapsed / 1000)}s`);
+        executingRef.current = false;
+        executingSinceRef.current = 0;
+        useGameStore.getState().setAttackInProgress(false);
+        useGameStore.getState().setApplyingPotions(false);
+        setCooldown();
+      }
+      return;
+    }
 
     const gs = useGameStore.getState();
     const ap = useAutopilotStore.getState();
     const balances = balancesRef.current;
 
     if (!gs.autopilotEnabled || !gs.summit) return;
-    if (gs.attackInProgress || gs.applyingPotions) return;
+
+    // Force-clear stale attackInProgress / applyingPotions after timeout
+    // (safety net for GameDirector not clearing these)
+    if (gs.attackInProgress || gs.applyingPotions) {
+      console.log('[Autopilot] Blocked:', { attackInProgress: gs.attackInProgress, applyingPotions: gs.applyingPotions });
+      return;
+    }
 
     // Clear cooldown on summit beast change
     if (gs.summit.beast.token_id !== lastSummitBeastRef.current) {
@@ -246,6 +271,7 @@ export function useAutopilotOrchestrator() {
 
     // Lock
     executingRef.current = true;
+    executingSinceRef.current = Date.now();
 
     try {
       const myBeast = gs.collection.find(b => b.token_id === gs.summit!.beast.token_id);
@@ -391,6 +417,7 @@ export function useAutopilotOrchestrator() {
       setCooldown();
     } finally {
       executingRef.current = false;
+      executingSinceRef.current = 0;
     }
   }, []);
 
