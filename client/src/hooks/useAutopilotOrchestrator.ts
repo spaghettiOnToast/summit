@@ -50,6 +50,8 @@ export function useAutopilotOrchestrator() {
   const lastSummitBeastRef = useRef<number | null>(null);
   const poisonedTokenIdRef = useRef<number | null>(null);
   const attackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastAttackedBeastRef = useRef<number | null>(null); // prevents "attacking own beast" after capture
+  const lastAttackTimeRef = useRef(0);
 
   // ── Derived values for UI ────────────────────────────────────────
   const isSavage = Boolean(collection.find(beast => beast.token_id === summit?.beast?.token_id));
@@ -276,6 +278,20 @@ export function useAutopilotOrchestrator() {
 
     try {
       const myBeast = gs.collection.find(b => b.token_id === gs.summit!.beast.token_id);
+
+      // Guard: if we just attacked this beast, wait for WebSocket to sync summit state
+      // This prevents "attacking own beast" when we captured but state hasn't updated
+      if (lastAttackedBeastRef.current === gs.summit!.beast.token_id
+        && !myBeast
+        && Date.now() - lastAttackTimeRef.current < 20_000) {
+        gs.setAutopilotLog('Waiting for summit state sync...');
+        return;
+      }
+      // Clear stale ref if summit beast changed
+      if (lastAttackedBeastRef.current !== gs.summit!.beast.token_id) {
+        lastAttackedBeastRef.current = null;
+      }
+
       const ownerIgnored = isOwnerIgnored(gs.summit.owner, ap.ignoredPlayers);
       const diplomacyMatch = ap.skipSharedDiplomacy && hasDiplomacyMatch(gs.collection, gs.summit.beast);
       const shouldSkip = ownerIgnored || diplomacyMatch;
@@ -392,6 +408,8 @@ export function useAutopilotOrchestrator() {
       if (ap.attackStrategy === 'all_out') {
         console.log('[Autopilot] Firing all_out attack', { beasts: beasts.length, extraLifePotions });
         gs.setAutopilotLog(`Attacking with ${beasts.length} beasts...`);
+        lastAttackedBeastRef.current = gs.summit!.beast.token_id;
+        lastAttackTimeRef.current = Date.now();
         await doAttackUntilCapture(beasts, extraLifePotions);
         return;
       }
@@ -410,6 +428,8 @@ export function useAutopilotOrchestrator() {
         const msg = `Attacking with ${attackBeasts.length} beast${attackBeasts.length > 1 ? 's' : ''}...`;
         console.log('[Autopilot]', msg, { extraLifePotions });
         gs.setAutopilotLog(msg);
+        lastAttackedBeastRef.current = gs.summit!.beast.token_id;
+        lastAttackTimeRef.current = Date.now();
         await doAttack(attackBeasts, extraLifePotions);
         return;
       }
