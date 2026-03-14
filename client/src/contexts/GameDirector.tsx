@@ -415,16 +415,16 @@ export const GameDirector = ({ children }: PropsWithChildren) => {
     }
   };
 
-  // WebSocket subscription
-  useWebSocket({
-    url: currentNetworkConfig.wsUrl,
-    channels: ["summit", "event"],
-    onSummit: handleSummit,
-    onEvent: handleEvent,
-    onConnectionChange: (state) => {
-      console.log("[GameDirector] WebSocket connection state:", state);
-    },
-  });
+  // WebSocket subscription — disabled to isolate controller issues
+  // useWebSocket({
+  //   url: currentNetworkConfig.wsUrl,
+  //   channels: ["summit", "event"],
+  //   onSummit: handleSummit,
+  //   onEvent: handleEvent,
+  //   onConnectionChange: (state) => {
+  //     console.log("[GameDirector] WebSocket connection state:", state);
+  //   },
+  // });
 
   useEffect(() => {
     fetchSummitData();
