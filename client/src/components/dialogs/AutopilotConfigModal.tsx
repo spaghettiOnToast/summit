@@ -328,10 +328,11 @@ interface RotateTopBeastsSectionProps {
   beastIds: number[];
   onAdd: (tokenId: number) => void;
   onRemove: (tokenId: number) => void;
-  collection: { token_id: number; name: string; type: string }[];
+  onSetIds: (ids: number[]) => void;
+  collection: { token_id: number; name: string; type: string; power: number }[];
 }
 
-function RotateTopBeastsSection({ enabled, onToggle, beastIds, onAdd, onRemove, collection }: RotateTopBeastsSectionProps) {
+function RotateTopBeastsSection({ enabled, onToggle, beastIds, onAdd, onRemove, onSetIds, collection }: RotateTopBeastsSectionProps) {
   const [tokenIdInput, setTokenIdInput] = React.useState('');
 
   const handleAdd = () => {
@@ -341,15 +342,16 @@ function RotateTopBeastsSection({ enabled, onToggle, beastIds, onAdd, onRemove, 
     setTokenIdInput('');
   };
 
+  const handleAutoDetect = () => {
+    const sorted = [...collection].sort((a, b) => b.power - a.power);
+    const topIds = sorted.slice(0, 9).map((b) => b.token_id);
+    onSetIds(topIds);
+  };
+
   const beastInfos = beastIds.map((id) => {
     const found = collection.find((b) => b.token_id === id);
     return { tokenId: id, name: found?.name ?? `Beast #${id}`, type: found?.type ?? 'Unknown', inCollection: !!found };
   });
-
-  const typeCounts = { Brute: 0, Magic: 0, Hunter: 0 };
-  for (const b of beastInfos) {
-    if (b.type in typeCounts) typeCounts[b.type as keyof typeof typeCounts]++;
-  }
 
   return (
     <Box sx={styles.row}>
@@ -363,7 +365,7 @@ function RotateTopBeastsSection({ enabled, onToggle, beastIds, onAdd, onRemove, 
         <Box sx={{ minWidth: 0 }}>
           <Typography sx={styles.inlineTitle}>Rotate Top Beasts</Typography>
           <Typography sx={styles.inlineSub}>
-            Select up to 6 beasts (2 per type). Autopilot auto counter-picks and revives regardless of cost.
+            Select up to 9 beasts or auto-detect your strongest. Autopilot auto counter-picks and revives regardless of cost.
           </Typography>
         </Box>
       </Box>
@@ -382,16 +384,25 @@ function RotateTopBeastsSection({ enabled, onToggle, beastIds, onAdd, onRemove, 
             <Button
               size="small"
               variant="outlined"
-              disabled={!tokenIdInput.trim() || beastIds.length >= 6}
+              disabled={!tokenIdInput.trim() || beastIds.length >= 9}
               onClick={handleAdd}
               sx={{ color: gameColors.accentGreen, borderColor: gameColors.accentGreen, minWidth: 'auto', px: 1.5 }}
             >
               Add
             </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              disabled={collection.length === 0}
+              onClick={handleAutoDetect}
+              sx={{ color: gameColors.accentGreen, borderColor: gameColors.accentGreen, minWidth: 'auto', px: 1.5 }}
+            >
+              Auto Top 9
+            </Button>
           </Box>
 
           <Typography sx={{ fontSize: '11px', color: '#9aa' }}>
-            Brutes: {typeCounts.Brute}/2, Magic: {typeCounts.Magic}/2, Hunters: {typeCounts.Hunter}/2
+            {beastInfos.length}/9 beasts selected
           </Typography>
 
           {beastInfos.length > 0 && (
@@ -506,6 +517,7 @@ function AutopilotConfigModal(props: AutopilotConfigModalProps) {
     rotateTopBeastIds,
     addRotateTopBeastId,
     removeRotateTopBeastId,
+    setRotateTopBeastIds,
     resetToDefaults,
   } = useAutopilotStore();
 
@@ -932,6 +944,7 @@ function AutopilotConfigModal(props: AutopilotConfigModalProps) {
             beastIds={rotateTopBeastIds}
             onAdd={addRotateTopBeastId}
             onRemove={removeRotateTopBeastId}
+            onSetIds={setRotateTopBeastIds}
             collection={collection}
           />
 

@@ -98,9 +98,9 @@ interface AutopilotConfig {
   poisonScheduleAmount: number;
   poisonScheduleTargetedOnly: boolean;
 
-  // Feature: Rotate Top Beasts — lock in 6 beasts, auto counter-pick
+  // Feature: Rotate Top Beasts — lock in up to 9 beasts, auto counter-pick
   rotateTopBeasts: boolean;
-  rotateTopBeastIds: number[];       // max 6 token IDs
+  rotateTopBeastIds: number[];       // max 9 token IDs
 }
 
 type AutopilotPersistedConfig = AutopilotConfig;
@@ -179,6 +179,7 @@ interface AutopilotState extends AutopilotPersistedConfig, AutopilotSessionCount
   setRotateTopBeasts: (enabled: boolean) => void;
   addRotateTopBeastId: (tokenId: number) => void;
   removeRotateTopBeastId: (tokenId: number) => void;
+  setRotateTopBeastIds: (ids: number[]) => void;
   /**
    * "Used" fields are counters.
    * - If passed a number, it is treated as an amount to ADD.
@@ -393,7 +394,7 @@ function loadConfigFromStorage(): AutopilotPersistedConfig | null {
       poisonScheduleTargetedOnly: typeof parsed.poisonScheduleTargetedOnly === 'boolean' ? parsed.poisonScheduleTargetedOnly : DEFAULT_CONFIG.poisonScheduleTargetedOnly,
       rotateTopBeasts: typeof parsed.rotateTopBeasts === 'boolean' ? parsed.rotateTopBeasts : DEFAULT_CONFIG.rotateTopBeasts,
       rotateTopBeastIds: Array.isArray(parsed.rotateTopBeastIds)
-        ? (parsed.rotateTopBeastIds as number[]).filter((id): id is number => typeof id === 'number' && id > 0).slice(0, 6)
+        ? (parsed.rotateTopBeastIds as number[]).filter((id): id is number => typeof id === 'number' && id > 0).slice(0, 9)
         : DEFAULT_CONFIG.rotateTopBeastIds,
     };
   } catch {
@@ -657,11 +658,13 @@ export const useAutopilotStore = create<AutopilotState>((set, get) => {
     addRotateTopBeastId: (tokenId: number) =>
       set(() => {
         const current = get().rotateTopBeastIds;
-        if (current.length >= 6 || current.includes(tokenId)) return {};
+        if (current.length >= 9 || current.includes(tokenId)) return {};
         return persist({ rotateTopBeastIds: [...current, tokenId] });
       }),
     removeRotateTopBeastId: (tokenId: number) =>
       set(() => persist({ rotateTopBeastIds: get().rotateTopBeastIds.filter((id) => id !== tokenId) })),
+    setRotateTopBeastIds: (ids: number[]) =>
+      set(() => persist({ rotateTopBeastIds: ids.filter((id) => typeof id === 'number' && id > 0).slice(0, 9) })),
 
     setRevivePotionsUsed: (update) => updateCounter('revivePotionsUsed', update),
     setAttackPotionsUsed: (update) => updateCounter('attackPotionsUsed', update),

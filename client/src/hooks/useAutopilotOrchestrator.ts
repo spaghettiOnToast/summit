@@ -87,14 +87,24 @@ export function useAutopilotOrchestrator() {
       const counterPicked = rotationPool.filter((b) => b.type === strongType);
       const candidates = counterPicked.length > 0 ? counterPicked : rotationPool;
 
+      const reviveBudget = useRevivePotions ? revivePotionMax - revivePotionsUsed : 0;
+
       return candidates.map((beast) => {
         const b = { ...beast };
         b.revival_time = getBeastRevivalTime(b);
         b.current_health = getBeastCurrentHealth(beast);
         b.combat = calculateBattleResult(b, summit, 0);
         return b;
-      }).filter((b) => !isBeastLocked(b))
-        .sort((a, b) => (b.combat?.estimatedDamage ?? 0) - (a.combat?.estimatedDamage ?? 0));
+      }).filter((b) => {
+        if (isBeastLocked(b)) return false;
+        // Enforce per-beast revive limit for dead beasts
+        if (b.current_health === 0) {
+          if (!useRevivePotions) return false;
+          const reviveCost = b.revival_count + 1;
+          if (reviveCost > revivePotionMaxPerBeast || reviveCost > reviveBudget) return false;
+        }
+        return true;
+      }).sort((a, b) => (b.combat?.estimatedDamage ?? 0) - (a.combat?.estimatedDamage ?? 0));
     }
 
     return selectOptimalBeasts(collection, summit, {
@@ -111,7 +121,7 @@ export function useAutopilotOrchestrator() {
       questFilters,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [summit?.beast?.token_id, summit?.beast?.extra_lives, summit?.beast?.current_health, collection.length, revivePotionsUsed, attackPotionsUsed, useRevivePotions, useAttackPotions, questMode, questFilters, maxBeastsPerAttack, attackStrategy, autopilotEnabled, rotateTopBeasts, rotateTopBeastIds]);
+  }, [summit?.beast?.token_id, summit?.beast?.extra_lives, summit?.beast?.current_health, collection.length, revivePotionsUsed, attackPotionsUsed, useRevivePotions, useAttackPotions, revivePotionMax, revivePotionMaxPerBeast, questMode, questFilters, maxBeastsPerAttack, attackStrategy, autopilotEnabled, rotateTopBeasts, rotateTopBeastIds]);
 
   // ── Handlers ─────────────────────────────────────────────────────────
 
