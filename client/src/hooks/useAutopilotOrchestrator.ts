@@ -348,7 +348,7 @@ export function useAutopilotOrchestrator() {
 
   // Main autopilot attack + conservative poison + extra life logic
   useEffect(() => {
-    if (!autopilotEnabled || attackInProgress || !collectionWithCombat || !summit) return;
+    if (!autopilotEnabled || attackInProgress || applyingPotions || !collectionWithCombat || !summit) return;
 
     const myBeast = collection.find((beast: Beast) => beast.token_id === summit?.beast.token_id);
 
@@ -376,6 +376,7 @@ export function useAutopilotOrchestrator() {
       const amount = Math.min(poisonConservativeAmount - summit.poison_count, poisonBalance, remainingCap);
       if (amount > 0 && handleApplyPoison(amount)) {
         poisonedTokenIdRef.current = summit.beast.token_id;
+        return; // Defer attack to next cycle after poison completes
       }
     }
 
@@ -415,10 +416,10 @@ export function useAutopilotOrchestrator() {
 
   // Re-trigger autopilot when summit beast is about to die (0 extra lives, 1 HP)
   useEffect(() => {
-    if (autopilotEnabled && !attackInProgress && summit?.beast.extra_lives === 0 && summit?.beast.current_health === 1) {
+    if (autopilotEnabled && !attackInProgress && !applyingPotions && summit?.beast.extra_lives === 0 && summit?.beast.current_health === 1) {
       setTriggerAutopilot();
     }
-  }, [autopilotEnabled, summit?.beast.current_health]);
+  }, [autopilotEnabled, attackInProgress, applyingPotions, summit?.beast.current_health]);
 
   // 1HP Snipe: auto-attack when summit drops to 1HP with no extra lives
   useEffect(() => {
