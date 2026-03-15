@@ -7,6 +7,7 @@ import type {
 import {
   useAutopilotStore,
 } from '@/stores/autopilotStore';
+import { useGameStore } from '@/stores/gameStore';
 import { gameColors } from '@/utils/themes';
 import CloseIcon from '@mui/icons-material/Close';
 import TuneIcon from '@mui/icons-material/Tune';
@@ -88,9 +89,12 @@ const POISON_OPTIONS: {
 
 const QUEST_OPTIONS: { id: string; label: string; description: string }[] = [
   { id: 'attack_summit', label: 'First Blood', description: 'Prioritize beasts that have never attacked the Summit.' },
-  { id: 'max_attack_streak', label: 'Consistency is Key', description: 'Prioritize beasts that haven\'t reached max attack streak of 10.' },
+  { id: 'max_attack_streak', label: 'Consistency is Key', description: 'Prioritize beasts whose streak is closest to expiring.' },
   { id: 'take_summit', label: 'Summit Conqueror', description: 'Prioritize beasts that haven\'t captured the Summit.' },
   { id: 'hold_summit_10s', label: 'Iron Grip', description: 'Prioritize beasts that haven\'t held the Summit for 10 seconds.' },
+  { id: 'level_up_3', label: 'Rising Power', description: 'Prioritize beasts below 3 bonus levels (lower level = higher priority).' },
+  { id: 'level_up_5', label: 'Apex Predator', description: 'Prioritize beasts below 5 bonus levels (lower level = higher priority).' },
+  { id: 'level_up_10', label: 'Mastery', description: 'Prioritize beasts below 10 bonus levels (lower level = higher priority).' },
   { id: 'revival_potion', label: 'Second Wind', description: 'Prioritize beasts that haven\'t used a revival potion.' },
   { id: 'attack_potion', label: 'A Vital Boost', description: 'Prioritize beasts that haven\'t used an attack potion.' },
 ];
@@ -120,8 +124,10 @@ function TargetedPoisonSection({ players, onAdd, onRemove, onAmountChange, poiso
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(async () => {
       try {
-        const result = await lookupUsernames([username]);
-        const address = result.get(username);
+        // Cartridge API normalizes usernames to lowercase
+        const lookupName = username.toLowerCase();
+        const result = await lookupUsernames([lookupName]);
+        const address = result.get(lookupName);
         if (input.trim() !== username) return;
         if (address) { setResolved(address); setError(null); }
         else { setResolved(null); setError('Player not found'); }
@@ -316,10 +322,108 @@ function TargetedPoisonBeastSection({ beasts, onAdd, onRemove, onAmountChange, p
   );
 }
 
+interface RotateTopBeastsSectionProps {
+  enabled: boolean;
+  onToggle: (enabled: boolean) => void;
+  beastIds: number[];
+  onAdd: (tokenId: number) => void;
+  onRemove: (tokenId: number) => void;
+  collection: { token_id: number; name: string; type: string }[];
+}
+
+function RotateTopBeastsSection({ enabled, onToggle, beastIds, onAdd, onRemove, collection }: RotateTopBeastsSectionProps) {
+  const [tokenIdInput, setTokenIdInput] = React.useState('');
+
+  const handleAdd = () => {
+    const tokenId = Number.parseInt(tokenIdInput.trim(), 10);
+    if (!Number.isFinite(tokenId) || tokenId <= 0) return;
+    onAdd(tokenId);
+    setTokenIdInput('');
+  };
+
+  const beastInfos = beastIds.map((id) => {
+    const found = collection.find((b) => b.token_id === id);
+    return { tokenId: id, name: found?.name ?? `Beast #${id}`, type: found?.type ?? 'Unknown', inCollection: !!found };
+  });
+
+  const typeCounts = { Brute: 0, Magic: 0, Hunter: 0 };
+  for (const b of beastInfos) {
+    if (b.type in typeCounts) typeCounts[b.type as keyof typeof typeCounts]++;
+  }
+
+  return (
+    <Box sx={styles.row}>
+      <Box sx={styles.toggleRow} onClick={() => onToggle(!enabled)}>
+        <Switch
+          checked={enabled}
+          onChange={(e) => onToggle(e.target.checked)}
+          onClick={(e) => e.stopPropagation()}
+          sx={styles.switch}
+        />
+        <Box sx={{ minWidth: 0 }}>
+          <Typography sx={styles.inlineTitle}>Rotate Top Beasts</Typography>
+          <Typography sx={styles.inlineSub}>
+            Select up to 6 beasts (2 per type). Autopilot auto counter-picks and revives regardless of cost.
+          </Typography>
+        </Box>
+      </Box>
+      {enabled && (
+        <Box sx={{ mt: 1, display: 'flex', flexDirection: 'column', gap: 1 }}>
+          <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+            <TextField
+              type="number"
+              size="small"
+              placeholder="Token ID"
+              value={tokenIdInput}
+              onChange={(e) => setTokenIdInput(e.target.value)}
+              inputProps={{ min: 1, step: 1 }}
+              sx={{ ...styles.numberField, width: 120 }}
+            />
+            <Button
+              size="small"
+              variant="outlined"
+              disabled={!tokenIdInput.trim() || beastIds.length >= 6}
+              onClick={handleAdd}
+              sx={{ color: gameColors.accentGreen, borderColor: gameColors.accentGreen, minWidth: 'auto', px: 1.5 }}
+            >
+              Add
+            </Button>
+          </Box>
+
+          <Typography sx={{ fontSize: '11px', color: '#9aa' }}>
+            Brutes: {typeCounts.Brute}/2, Magic: {typeCounts.Magic}/2, Hunters: {typeCounts.Hunter}/2
+          </Typography>
+
+          {beastInfos.length > 0 && (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+              {beastInfos.map((beast) => (
+                <Box key={beast.tokenId} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Box sx={styles.ignoredPlayerChip}>
+                    <Typography sx={styles.ignoredPlayerName}>
+                      {beast.name} (#{beast.tokenId}) — {beast.type}
+                    </Typography>
+                    <IconButton size="small" onClick={() => onRemove(beast.tokenId)} sx={styles.ignoredPlayerRemove}>
+                      <CloseIcon sx={{ fontSize: 12 }} />
+                    </IconButton>
+                  </Box>
+                  {!beast.inCollection && (
+                    <Typography sx={{ fontSize: '10px', color: gameColors.red }}>Not in collection</Typography>
+                  )}
+                </Box>
+              ))}
+            </Box>
+          )}
+        </Box>
+      )}
+    </Box>
+  );
+}
+
 function AutopilotConfigModal(props: AutopilotConfigModalProps) {
   const { open, close } = props;
 
   const { tokenBalances } = useController();
+  const { collection } = useGameStore();
 
   const {
     attackStrategy,
@@ -381,6 +485,27 @@ function AutopilotConfigModal(props: AutopilotConfigModalProps) {
     setQuestMode,
     questFilters,
     setQuestFilters,
+    snipeAt1Hp,
+    setSnipeAt1Hp,
+    poisonScheduleEnabled,
+    setPoisonScheduleEnabled,
+    poisonScheduleStartHour,
+    setPoisonScheduleStartHour,
+    poisonScheduleStartMinute,
+    setPoisonScheduleStartMinute,
+    poisonScheduleEndHour,
+    setPoisonScheduleEndHour,
+    poisonScheduleEndMinute,
+    setPoisonScheduleEndMinute,
+    poisonScheduleAmount,
+    setPoisonScheduleAmount,
+    poisonScheduleTargetedOnly,
+    setPoisonScheduleTargetedOnly,
+    rotateTopBeasts,
+    setRotateTopBeasts,
+    rotateTopBeastIds,
+    addRotateTopBeastId,
+    removeRotateTopBeastId,
     resetToDefaults,
   } = useAutopilotStore();
 
@@ -406,8 +531,10 @@ function AutopilotConfigModal(props: AutopilotConfigModalProps) {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(async () => {
       try {
-        const result = await lookupUsernames([username]);
-        const address = result.get(username);
+        // Cartridge API normalizes usernames to lowercase
+        const lookupName = username.toLowerCase();
+        const result = await lookupUsernames([lookupName]);
+        const address = result.get(lookupName);
         // Only update if input hasn't changed while we were fetching
         if (ignoredInput.trim() !== username) return;
         if (address) {
@@ -782,6 +909,32 @@ function AutopilotConfigModal(props: AutopilotConfigModalProps) {
             </>
           )}
 
+          <Box sx={styles.row}>
+            <Box sx={styles.toggleRow} onClick={() => setSnipeAt1Hp(!snipeAt1Hp)}>
+              <Switch
+                checked={snipeAt1Hp}
+                onChange={(e) => setSnipeAt1Hp(e.target.checked)}
+                onClick={(e) => e.stopPropagation()}
+                sx={styles.switch}
+              />
+              <Box sx={{ minWidth: 0 }}>
+                <Typography sx={styles.inlineTitle}>Snipe at 1HP</Typography>
+                <Typography sx={styles.inlineSub}>
+                  Automatically attack with your weakest or quest-needing beast when the summit drops to 1HP.
+                </Typography>
+              </Box>
+            </Box>
+          </Box>
+
+          <RotateTopBeastsSection
+            enabled={rotateTopBeasts}
+            onToggle={setRotateTopBeasts}
+            beastIds={rotateTopBeastIds}
+            onAdd={addRotateTopBeastId}
+            onRemove={removeRotateTopBeastId}
+            collection={collection}
+          />
+
           <Box sx={styles.sectionDivider} />
 
           {renderStrategyRow(
@@ -1023,6 +1176,56 @@ function AutopilotConfigModal(props: AutopilotConfigModalProps) {
             onAmountChange={setTargetedPoisonBeastAmount}
             poisonAvailable={Number(poisonAvailable) || 0}
           />
+
+          <Box sx={styles.row}>
+            <Box sx={styles.toggleRow} onClick={() => setPoisonScheduleEnabled(!poisonScheduleEnabled)}>
+              <Switch
+                checked={poisonScheduleEnabled}
+                onChange={(e) => setPoisonScheduleEnabled(e.target.checked)}
+                onClick={(e) => e.stopPropagation()}
+                sx={styles.switch}
+              />
+              <Box sx={{ minWidth: 0 }}>
+                <Typography sx={styles.inlineTitle}>Poison Schedule</Typography>
+                <Typography sx={styles.inlineSub}>
+                  Automatically poison during a specific time window each day.
+                </Typography>
+              </Box>
+            </Box>
+            {poisonScheduleEnabled && (
+              <Box sx={{ mt: 1, display: 'flex', flexDirection: 'column', gap: 1 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                  <Typography sx={styles.maxLabel}>Start</Typography>
+                  {numberField(poisonScheduleStartHour, setPoisonScheduleStartHour, false, 0, 23)}
+                  <Typography sx={{ color: '#9aa', fontSize: '12px' }}>:</Typography>
+                  {numberField(poisonScheduleStartMinute, setPoisonScheduleStartMinute, false, 0, 59)}
+                  <Typography sx={styles.maxLabel}>End</Typography>
+                  {numberField(poisonScheduleEndHour, setPoisonScheduleEndHour, false, 0, 23)}
+                  <Typography sx={{ color: '#9aa', fontSize: '12px' }}>:</Typography>
+                  {numberField(poisonScheduleEndMinute, setPoisonScheduleEndMinute, false, 0, 59)}
+                </Box>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Typography sx={styles.maxLabel}>Amount</Typography>
+                  {numberField(poisonScheduleAmount, setPoisonScheduleAmount, false, 1, Math.max(Number(poisonAvailable) || 0, 1))}
+                </Box>
+                <Box sx={styles.toggleRow} onClick={() => setPoisonScheduleTargetedOnly(!poisonScheduleTargetedOnly)}>
+                  <Switch
+                    checked={poisonScheduleTargetedOnly}
+                    onChange={(e) => setPoisonScheduleTargetedOnly(e.target.checked)}
+                    onClick={(e) => e.stopPropagation()}
+                    sx={styles.switch}
+                    size="small"
+                  />
+                  <Box sx={{ minWidth: 0 }}>
+                    <Typography sx={styles.inlineTitle}>Targeted only</Typography>
+                    <Typography sx={styles.inlineSub}>
+                      Only poison during schedule if the summit holder is a targeted player or beast.
+                    </Typography>
+                  </Box>
+                </Box>
+              </Box>
+            )}
+          </Box>
 
           <Box sx={styles.sectionDivider} />
 

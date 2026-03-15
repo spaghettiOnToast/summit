@@ -63,6 +63,7 @@ vi.mock("@/dojo/useGameTokens", () => ({
   }),
 }));
 
+
 vi.mock("./starknet", () => ({
   useDynamicConnector: () => ({
     currentNetworkConfig: {
