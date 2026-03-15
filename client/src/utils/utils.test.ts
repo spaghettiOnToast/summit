@@ -1,54 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
-  bigintToHex,
   ellipseAddress,
-  getShortNamespace,
   parseBalances,
   formatAmount,
   formatRewardNumber,
   shuffle,
 } from "./utils";
-
-// ---------------------------------------------------------------------------
-// bigintToHex
-// ---------------------------------------------------------------------------
-describe("bigintToHex", () => {
-  it("returns 0x0 for 0", () => {
-    expect(bigintToHex(0)).toBe("0x0");
-  });
-
-  it("returns 0x0 for undefined", () => {
-    expect(bigintToHex(undefined as unknown as number)).toBe("0x0");
-  });
-
-  it("returns 0x0 for null", () => {
-    expect(bigintToHex(null as unknown as number)).toBe("0x0");
-  });
-
-  it("returns 0x0 for empty string (falsy)", () => {
-    expect(bigintToHex("" as unknown as number)).toBe("0x0");
-  });
-
-  it("converts 255n to 0xff", () => {
-    expect(bigintToHex(255n)).toBe("0xff");
-  });
-
-  it("converts large bigint correctly", () => {
-    expect(bigintToHex(65536n)).toBe("0x10000");
-  });
-
-  it("converts numeric string", () => {
-    expect(bigintToHex("1000")).toBe("0x3e8");
-  });
-
-  it("converts hex string input", () => {
-    expect(bigintToHex("0xff")).toBe("0xff");
-  });
-
-  it("converts 1 correctly", () => {
-    expect(bigintToHex(1)).toBe("0x1");
-  });
-});
 
 // ---------------------------------------------------------------------------
 // ellipseAddress
@@ -71,27 +28,6 @@ describe("ellipseAddress", () => {
   it("uppercases the entire output", () => {
     const result = ellipseAddress("0xabcdef1234567890", 4, 4);
     expect(result).toBe("0XAB...7890");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// getShortNamespace
-// ---------------------------------------------------------------------------
-describe("getShortNamespace", () => {
-  it("converts underscored string to camelCase", () => {
-    expect(getShortNamespace("hello_world")).toBe("helloWorld");
-  });
-
-  it("leaves single word unchanged", () => {
-    expect(getShortNamespace("summit")).toBe("summit");
-  });
-
-  it("handles multiple underscores", () => {
-    expect(getShortNamespace("my_long_namespace_here")).toBe("myLongNamespaceHere");
-  });
-
-  it("handles two-part namespace", () => {
-    expect(getShortNamespace("savage_summit")).toBe("savageSummit");
   });
 });
 

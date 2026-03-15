@@ -5,7 +5,6 @@ import type { selection, Stats } from "@/types/game";
 import { calculateRevivalRequired } from "@/utils/beasts";
 import { translateGameEvent } from "@/utils/translation";
 import type { TranslatedGameEvent } from "@/utils/translation";
-import { delay } from "@/utils/utils";
 import { useAccount } from "@starknet-react/core";
 import { useSnackbar } from "notistack";
 import { CallData } from "starknet";
@@ -119,13 +118,10 @@ export const useSystemCalls = () => {
 
         if (feeAmount > 0) {
           triggerGasSpent(feeAmount);
-          // Update STRK balance after a short delay to sync with animation
-          setTimeout(() => {
-            setTokenBalances((prev: Record<string, number>) => ({
-              ...prev,
-              STRK: Math.max(0, (prev["STRK"] || 0) - feeAmount),
-            }));
-          }, 1400); // Delay to let the animation start before balance updates
+          setTokenBalances((prev: Record<string, number>) => ({
+            ...prev,
+            STRK: Math.max(0, (prev["STRK"] || 0) - feeAmount),
+          }));
         }
       }
 
@@ -179,8 +175,6 @@ export const useSystemCalls = () => {
 
       return receipt as unknown as TransactionReceiptLike;
     } catch (error) {
-      console.error("Error waiting for transaction:", error);
-      await delay(500);
       return waitForTransaction(txHash, retries + 1);
     }
   }

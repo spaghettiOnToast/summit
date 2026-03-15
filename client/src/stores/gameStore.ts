@@ -72,7 +72,6 @@ interface GameState {
   applyingPotions: boolean;
   selectedBeasts: selection;
   adventurerCollection: Adventurer[];
-  selectedAdventurers: Adventurer[];
   appliedPoisonCount: number;
   appliedExtraLifePotions: number;
   attackMode: 'safe' | 'unsafe' | 'autopilot';
@@ -103,7 +102,6 @@ interface GameState {
   setAttackInProgress: (attackInProgress: boolean) => void;
   setApplyingPotions: (applyingPotions: boolean) => void;
   setSelectedBeasts: (selectedBeasts: selection | ((prev: selection) => selection)) => void;
-  setSelectedAdventurers: (selectedAdventurers: Adventurer[]) => void;
   setAppliedPoisonCount: (appliedPoisonCount: number) => void;
   setAppliedExtraLifePotions: (appliedExtraLifePotions: number) => void;
   setAttackMode: (attackMode: 'safe' | 'unsafe' | 'autopilot') => void;
@@ -140,7 +138,6 @@ export const useGameStore = create<GameState>((set, _get) => ({
   attackInProgress: false,
   applyingPotions: false,
   selectedBeasts: [],
-  selectedAdventurers: [],
   appliedPoisonCount: 0,
   appliedExtraLifePotions: 0,
   attackMode: 'unsafe',
@@ -181,8 +178,7 @@ export const useGameStore = create<GameState>((set, _get) => ({
       attackInProgress: false,
       applyingPotions: false,
       selectedBeasts: [],
-      selectedAdventurers: [],
-      appliedExtraLifePotions: 0,
+          appliedExtraLifePotions: 0,
       appliedPoisonCount: 0,
       attackMode: 'unsafe',
       autopilotEnabled: false,
@@ -225,8 +221,7 @@ export const useGameStore = create<GameState>((set, _get) => ({
   setApplyingPotions: (applyingPotions: boolean) => set({ applyingPotions }),
   setSelectedBeasts: (selectedBeasts: selection | ((prev: selection) => selection)) =>
     set(state => ({ selectedBeasts: typeof selectedBeasts === 'function' ? selectedBeasts(state.selectedBeasts) : selectedBeasts })),
-  setSelectedAdventurers: (selectedAdventurers: Adventurer[]) => set({ selectedAdventurers }),
-  setAdventurerCollection: (adventurerCollection: Adventurer[]) => set({ adventurerCollection }),
+setAdventurerCollection: (adventurerCollection: Adventurer[]) => set({ adventurerCollection }),
   setAppliedPoisonCount: (appliedPoisonCount: number) => set({ appliedPoisonCount }),
   setAppliedExtraLifePotions: (appliedExtraLifePotions: number) => set({ appliedExtraLifePotions }),
   setAttackMode: (attackMode: 'safe' | 'unsafe' | 'autopilot') => set({ attackMode }),

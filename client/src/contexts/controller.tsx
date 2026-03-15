@@ -188,10 +188,8 @@ export const ControllerProvider = ({ children }: PropsWithChildren) => {
     setShowTermsOfService(false);
   };
 
-  const triggerGasSpent = async (amount: number) => {
-    await delay(1000);
+  const triggerGasSpent = (amount: number) => {
     setGasSpent(amount);
-    // Auto-clear after animation duration
     setTimeout(() => setGasSpent(null), 4000);
   };
 

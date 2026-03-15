@@ -715,10 +715,7 @@ export const GameDirector = ({ children }: PropsWithChildren) => {
         setExtraLifePotionsUsed((prev) => prev + extraLifePotions);
         setAppliedExtraLifePotions(0);
       }
-    }
 
-    if (action.type === "attack" || action.type === "attack_until_capture") {
-      // Always store battle events so the UI shows attack results
       const battleEvents: BattleEvent[] = events
         .filter(isBattleEvent)
         .map(({ componentName: _componentName, ...battleEvent }) => battleEvent);

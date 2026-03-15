@@ -1,24 +1,9 @@
-import type { BigNumberish } from "starknet";
-import { shortString } from "starknet";
-
-export const stringToFelt = (v: string): BigNumberish =>
-  v ? shortString.encodeShortString(v) : "0x0";
-
-export const bigintToHex = (v: BigNumberish): `0x${string}` =>
-  !v ? "0x0" : `0x${BigInt(v).toString(16)}`;
-
 export function delay(time: number) {
   return new Promise(resolve => setTimeout(resolve, time));
 }
 
 export function ellipseAddress(address: string, start: number, end: number) {
   return `${address.slice(0, start)}...${address.slice(-end)}`.toUpperCase();
-}
-
-export const getShortNamespace = (namespace: string) => {
-  const parts = namespace.split('_');
-  const short = parts[0] + parts.slice(1).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join('');
-  return short;
 }
 
 export function parseBalances(
