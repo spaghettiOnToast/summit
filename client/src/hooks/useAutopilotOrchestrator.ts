@@ -3,7 +3,6 @@ import { MAX_BEASTS_PER_ATTACK, useGameDirector } from '@/contexts/GameDirector'
 import { useAutopilotStore } from '@/stores/autopilotStore';
 import { useGameStore } from '@/stores/gameStore';
 import type { Beast } from '@/types/game';
-import { delay } from '@/utils/utils';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   calculateRevivalRequired,
@@ -14,10 +13,7 @@ import {
 
 // ── Constants ────────────────────────────────────────────────────────
 const TICK_MS = 5_000;           // Autopilot polling interval
-const TX_SETTLE_MS = 3_000;      // Delay between potion wallet calls
-const POST_ATTACK_SETTLE_MS = 12_000; // Longer delay after attacks (controller needs time)
 const COOLDOWN_MS = 30_000;      // Backoff after failures
-const ATTACK_TIMEOUT_MS = 90_000; // Safety timeout for stuck attacks
 
 export function useAutopilotOrchestrator() {
   // ── Context values → refs (so the interval can read them) ────────
@@ -45,11 +41,9 @@ export function useAutopilotOrchestrator() {
 
   // ── Internal refs ────────────────────────────────────────────────
   const executingRef = useRef(false);
-  const executingSinceRef = useRef(0);       // timestamp when executingRef was set
   const cooldownUntilRef = useRef(0);
   const lastSummitBeastRef = useRef<number | null>(null);
   const poisonedTokenIdRef = useRef<number | null>(null);
-  const attackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastAttackedBeastRef = useRef<number | null>(null); // prevents "attacking own beast" after capture
   const lastAttackTimeRef = useRef(0);
 
@@ -74,27 +68,6 @@ export function useAutopilotOrchestrator() {
   // ── Helpers ──────────────────────────────────────────────────────
   const setCooldown = () => {
     cooldownUntilRef.current = Date.now() + COOLDOWN_MS;
-    console.log(`[Autopilot] Cooldown set for ${COOLDOWN_MS / 1000}s`);
-  };
-
-  const clearAttackTimeout = () => {
-    if (attackTimeoutRef.current) {
-      clearTimeout(attackTimeoutRef.current);
-      attackTimeoutRef.current = null;
-    }
-  };
-
-  const startAttackTimeout = () => {
-    clearAttackTimeout();
-    attackTimeoutRef.current = setTimeout(() => {
-      const { attackInProgress: stuck } = useGameStore.getState();
-      if (stuck) {
-        console.warn('[Autopilot] Attack timed out — force-clearing');
-        useGameStore.getState().setAttackInProgress(false);
-      }
-      setCooldown();
-      attackTimeoutRef.current = null;
-    }, ATTACK_TIMEOUT_MS);
   };
 
   // ── Action executors (sequential, awaited) ───────────────────────
@@ -103,35 +76,25 @@ export function useAutopilotOrchestrator() {
     const gs = useGameStore.getState();
     gs.setApplyingPotions(true);
     gs.setAutopilotLog('Adding extra lives...');
-    try {
-      const result = await executeRef.current({ type: 'add_extra_life', beastId, extraLifePotions: amount });
-      if (!result) setCooldown();
-      return !!result;
-    } finally {
-      await delay(TX_SETTLE_MS);
-    }
+    const result = await executeRef.current({ type: 'add_extra_life', beastId, extraLifePotions: amount });
+    if (!result) setCooldown();
+    return !!result;
   };
 
   const doApplyPoison = async (beastId: number, amount: number): Promise<boolean> => {
     const gs = useGameStore.getState();
     gs.setApplyingPotions(true);
     gs.setAutopilotLog('Applying poison...');
-    try {
-      const result = await executeRef.current({ type: 'apply_poison', beastId, count: amount });
-      if (!result) setCooldown();
-      return !!result;
-    } finally {
-      await delay(TX_SETTLE_MS);
-    }
+    const result = await executeRef.current({ type: 'apply_poison', beastId, count: amount });
+    if (!result) setCooldown();
+    return !!result;
   };
 
   const doAttack = async (beasts: Beast[], extraLifePotions: number): Promise<boolean> => {
     const gs = useGameStore.getState();
     gs.setBattleEvents([]);
     gs.setAttackInProgress(true);
-    startAttackTimeout();
     try {
-      console.log('[Autopilot] doAttack: dispatching to GameDirector...');
       const result = await executeRef.current({
         type: 'attack',
         beasts: beasts.map((beast: Beast) => [beast, 1, beast.combat?.attackPotions || 0]),
@@ -139,8 +102,6 @@ export function useAutopilotOrchestrator() {
         extraLifePotions,
         attackPotions: beasts[0]?.combat?.attackPotions || 0,
       });
-      console.log('[Autopilot] doAttack: result =', result);
-      clearAttackTimeout();
       if (!result) {
         setCooldown();
         gs.setAttackInProgress(false);
@@ -149,11 +110,8 @@ export function useAutopilotOrchestrator() {
     } catch (error) {
       console.error('[Autopilot] attack error:', error);
       setCooldown();
-      clearAttackTimeout();
       gs.setAttackInProgress(false);
       return false;
-    } finally {
-      await delay(POST_ATTACK_SETTLE_MS);
     }
   };
 
@@ -161,7 +119,6 @@ export function useAutopilotOrchestrator() {
     const gs = useGameStore.getState();
     gs.setBattleEvents([]);
     gs.setAttackInProgress(true);
-    startAttackTimeout();
 
     const beastTuples: [Beast, number, number][] = allBeasts.map(b => [b, 1, b.combat?.attackPotions || 0]);
     const batches: [Beast, number, number][][] = [];
@@ -173,9 +130,6 @@ export function useAutopilotOrchestrator() {
       const poisonedThisSequence = new Set<number>();
 
       for (let i = 0; i < batches.length; i++) {
-        // Settle between batches
-        if (i > 0) await delay(POST_ATTACK_SETTLE_MS);
-
         // Re-read state between batches
         const currentSummit = useGameStore.getState().summit;
         if (!currentSummit) break;
@@ -194,22 +148,18 @@ export function useAutopilotOrchestrator() {
           if (poisonAmount > 0) {
             await doApplyPoison(currentSummit.beast.token_id, poisonAmount);
             poisonedThisSequence.add(currentSummit.beast.token_id);
-            await delay(TX_SETTLE_MS);
           }
         }
 
-        console.log(`[Autopilot] doAttackUntilCapture: batch ${i + 1}/${batches.length}, dispatching...`);
         const result = await executeRef.current({
           type: 'attack_until_capture',
           beasts: batches[i],
           extraLifePotions,
         });
-        console.log(`[Autopilot] doAttackUntilCapture: batch ${i + 1} result =`, result);
 
         if (!result) {
           const post = useGameStore.getState();
           const didCapture = post.summit && post.collection.some(b => b.token_id === post.summit!.beast.token_id);
-          console.log('[Autopilot] doAttackUntilCapture: !result, didCapture =', didCapture);
           if (!didCapture) setCooldown();
           break;
         }
@@ -220,30 +170,14 @@ export function useAutopilotOrchestrator() {
       setCooldown();
       return false;
     } finally {
-      console.log('[Autopilot] doAttackUntilCapture: finally — clearing attackInProgress');
-      clearAttackTimeout();
       gs.setAttackInProgress(false);
-      await delay(POST_ATTACK_SETTLE_MS);
     }
   };
 
   // ── The tick function (ALL autopilot logic) ──────────────────────
 
   const tick = useCallback(async () => {
-    // Hard lock: only one tick runs at a time
-    if (executingRef.current) {
-      // Stuck detection: if we've been executing for > ATTACK_TIMEOUT_MS, force-unlock
-      const elapsed = Date.now() - executingSinceRef.current;
-      if (elapsed > ATTACK_TIMEOUT_MS) {
-        console.warn(`[Autopilot] Force-clearing stuck lock after ${Math.round(elapsed / 1000)}s`);
-        executingRef.current = false;
-        executingSinceRef.current = 0;
-        useGameStore.getState().setAttackInProgress(false);
-        useGameStore.getState().setApplyingPotions(false);
-        setCooldown();
-      }
-      return;
-    }
+    if (executingRef.current) return;
 
     const gs = useGameStore.getState();
     const ap = useAutopilotStore.getState();
@@ -251,12 +185,7 @@ export function useAutopilotOrchestrator() {
 
     if (!gs.autopilotEnabled || !gs.summit) return;
 
-    // Force-clear stale attackInProgress / applyingPotions after timeout
-    // (safety net for GameDirector not clearing these)
-    if (gs.attackInProgress || gs.applyingPotions) {
-      console.log('[Autopilot] Blocked:', { attackInProgress: gs.attackInProgress, applyingPotions: gs.applyingPotions });
-      return;
-    }
+    if (gs.attackInProgress || gs.applyingPotions) return;
 
     // Clear cooldown on summit beast change
     if (gs.summit.beast.token_id !== lastSummitBeastRef.current) {
@@ -272,9 +201,7 @@ export function useAutopilotOrchestrator() {
       return;
     }
 
-    // Lock
     executingRef.current = true;
-    executingSinceRef.current = Date.now();
 
     try {
       const myBeast = gs.collection.find(b => b.token_id === gs.summit!.beast.token_id);
@@ -406,7 +333,6 @@ export function useAutopilotOrchestrator() {
       }
 
       if (ap.attackStrategy === 'all_out') {
-        console.log('[Autopilot] Firing all_out attack', { beasts: beasts.length, extraLifePotions });
         gs.setAutopilotLog(`Attacking with ${beasts.length} beasts...`);
         lastAttackedBeastRef.current = gs.summit!.beast.token_id;
         lastAttackTimeRef.current = Date.now();
@@ -426,7 +352,6 @@ export function useAutopilotOrchestrator() {
         }
 
         const msg = `Attacking with ${attackBeasts.length} beast${attackBeasts.length > 1 ? 's' : ''}...`;
-        console.log('[Autopilot]', msg, { extraLifePotions });
         gs.setAutopilotLog(msg);
         lastAttackedBeastRef.current = gs.summit!.beast.token_id;
         lastAttackTimeRef.current = Date.now();
@@ -438,7 +363,6 @@ export function useAutopilotOrchestrator() {
       setCooldown();
     } finally {
       executingRef.current = false;
-      executingSinceRef.current = 0;
     }
   }, []);
 
@@ -499,7 +423,6 @@ export function useAutopilotOrchestrator() {
   };
 
   const stopAutopilot = () => {
-    clearAttackTimeout();
     setAutopilotEnabled(false);
   };
 

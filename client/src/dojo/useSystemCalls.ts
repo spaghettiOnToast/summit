@@ -98,33 +98,9 @@ export const useSystemCalls = () => {
       return null;
     }
 
-    // Cancellation token — stops zombie waitForTransaction polling
-    const cancelled = { current: false };
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-
     try {
-      console.log('[SystemCalls] Submitting tx...', { calls: calls.length });
-
-      const TX_LIFECYCLE_TIMEOUT = 60_000;
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        timeoutId = setTimeout(() => {
-          cancelled.current = true;
-          reject(new Error('Transaction timed out after 60s'));
-        }, TX_LIFECYCLE_TIMEOUT);
-      });
-
-      const tx = await Promise.race([
-        account.execute(calls),
-        timeoutPromise,
-      ]);
-      console.log('[SystemCalls] Tx submitted:', tx.transaction_hash);
-      const receipt = await Promise.race([
-        waitForTransaction(tx.transaction_hash, 0, cancelled),
-        timeoutPromise,
-      ]);
-      // Clear timeout on success — prevents orphaned rejection
-      clearTimeout(timeoutId);
-      console.log('[SystemCalls] Receipt:', receipt.execution_status);
+      const tx = await account.execute(calls);
+      const receipt = await waitForTransaction(tx.transaction_hash, 0);
 
       if (receipt.execution_status === "REVERTED") {
         console.log('action failed reverted', receipt);
@@ -162,9 +138,6 @@ export const useSystemCalls = () => {
 
       return translatedEvents;
     } catch (error) {
-      cancelled.current = true;
-      clearTimeout(timeoutId);
-      console.error("Error executing action:", error);
       if (!autopilotEnabled) {
         const executionError =
           typeof error === "object" &&
@@ -186,12 +159,7 @@ export const useSystemCalls = () => {
   const waitForTransaction = async (
     txHash: string,
     retries: number,
-    cancelled?: { current: boolean }
   ): Promise<TransactionReceiptLike> => {
-    if (cancelled?.current) {
-      throw new Error("Transaction cancelled");
-    }
-
     if (retries > 9) {
       throw new Error("Transaction failed");
     }
@@ -211,12 +179,9 @@ export const useSystemCalls = () => {
 
       return receipt as unknown as TransactionReceiptLike;
     } catch (error) {
-      if (cancelled?.current) {
-        throw new Error("Transaction cancelled");
-      }
-      console.error("Error waiting for transaction :", error);
+      console.error("Error waiting for transaction:", error);
       await delay(500);
-      return waitForTransaction(txHash, retries + 1, cancelled);
+      return waitForTransaction(txHash, retries + 1);
     }
   }
 
