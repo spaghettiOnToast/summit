@@ -5,7 +5,7 @@ import { useGameStore } from '@/stores/gameStore';
 import type { Beast } from '@/types/game';
 import React, { useEffect, useMemo, useReducer } from 'react';
 import {
-  calculateRevivalRequired, calculateBattleResult, getBeastCurrentHealth, getBeastRevivalTime, isBeastLocked,
+  calculateRevivalRequired, calculateBattleResult, calculateOptimalAttackPotions, getBeastCurrentHealth, getBeastRevivalTime, isBeastLocked,
   isOwnerIgnored, isOwnerTargetedForPoison, getTargetedPoisonAmount,
   isBeastTargetedForPoison, getTargetedBeastPoisonAmount,
   hasDiplomacyMatch, selectOptimalBeasts, getStrongType, isWithinPoisonSchedule,
@@ -82,18 +82,28 @@ export function useAutopilotOrchestrator() {
 
     // Rotate Top Beasts override: filter to rotation pool, counter-pick by type
     if (autopilotEnabled && rotateTopBeasts && rotateTopBeastIds.length > 0) {
-      const rotationPool = collection.filter((b) => rotateTopBeastIds.includes(b.token_id));
+      const rotationIdSet = new Set(rotateTopBeastIds);
+      const rotationPool = collection.filter((b) => rotationIdSet.has(b.token_id));
       const strongType = getStrongType(summit.beast.type);
       const counterPicked = rotationPool.filter((b) => b.type === strongType);
       const candidates = counterPicked.length > 0 ? counterPicked : rotationPool;
 
       const reviveBudget = useRevivePotions ? revivePotionMax - revivePotionsUsed : 0;
+      const attackBudget = useAttackPotions ? attackPotionMax - attackPotionsUsed : 0;
 
       return candidates.map((beast) => {
         const b = { ...beast };
         b.revival_time = getBeastRevivalTime(b);
         b.current_health = getBeastCurrentHealth(beast);
-        b.combat = calculateBattleResult(b, summit, 0);
+        // Calculate optimal attack potions for top beast candidates
+        const baseCombat = calculateBattleResult(b, summit, 0);
+        if (attackBudget > 0) {
+          const maxPotions = Math.min(attackBudget, attackPotionMaxPerBeast, 255);
+          const potions = calculateOptimalAttackPotions([b, 1, 0], summit, maxPotions);
+          b.combat = potions > 0 ? calculateBattleResult(b, summit, potions) : baseCombat;
+        } else {
+          b.combat = baseCombat;
+        }
         return b;
       }).filter((b) => {
         if (isBeastLocked(b)) return false;
@@ -121,7 +131,7 @@ export function useAutopilotOrchestrator() {
       questFilters,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [summit?.beast?.token_id, summit?.beast?.extra_lives, summit?.beast?.current_health, collection.length, revivePotionsUsed, attackPotionsUsed, useRevivePotions, useAttackPotions, revivePotionMax, revivePotionMaxPerBeast, questMode, questFilters, maxBeastsPerAttack, attackStrategy, autopilotEnabled, rotateTopBeasts, rotateTopBeastIds]);
+  }, [summit?.beast?.token_id, summit?.beast?.extra_lives, summit?.beast?.current_health, collection.length, revivePotionsUsed, attackPotionsUsed, useRevivePotions, useAttackPotions, revivePotionMax, revivePotionMaxPerBeast, attackPotionMax, attackPotionMaxPerBeast, questMode, questFilters, maxBeastsPerAttack, attackStrategy, autopilotEnabled, rotateTopBeasts, rotateTopBeastIds]);
 
   // ── Handlers ─────────────────────────────────────────────────────────
 
@@ -232,7 +242,7 @@ export function useAutopilotOrchestrator() {
     } finally {
       setAttackInProgress(false);
       // Schedule retry so autopilot doesn't stall after a transient failure
-      setTimeout(() => setTriggerAutopilot(), 3_000);
+      setTimeout(() => setTriggerAutopilot(), 1_000);
     }
   };
 
@@ -418,7 +428,7 @@ export function useAutopilotOrchestrator() {
         extraLifePotions: extraLifePotions,
         attackPotions: beasts[0]?.combat?.attackPotions || 0
       }).then((success) => {
-        if (!success) setTimeout(() => setTriggerAutopilot(), 3_000);
+        if (!success) setTimeout(() => setTriggerAutopilot(), 1_000);
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
