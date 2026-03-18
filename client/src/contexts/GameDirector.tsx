@@ -582,7 +582,7 @@ export const GameDirector = ({ children }: PropsWithChildren) => {
         return false;
       }
 
-      txs.push(...attack(beasts, false, true, extraLifePotions));
+      txs.push(...attack(beasts, action.safeAttack ?? false, true, extraLifePotions));
     }
 
     if (action.type === "claim_corpse_reward") {

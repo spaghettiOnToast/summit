@@ -267,6 +267,7 @@ export function useAutopilotOrchestrator() {
         const result = await executeGameAction({
           type: 'attack_until_capture',
           beasts: batch,
+          safeAttack: ignoredPlayers.length > 0,
           extraLifePotions
         });
 
@@ -360,6 +361,9 @@ export function useAutopilotOrchestrator() {
     const myBeast = collection.find((beast: Beast) => beast.token_id === summit.beast.token_id);
     if (myBeast) return;
 
+    // Skip poison for ignored players (guild protection)
+    if (isOwnerIgnored(summit.owner, ignoredPlayers)) return;
+
     // Beast-level targeted poison (highest priority)
     const isBeastTarget = targetedPoisonBeasts.length > 0 && isBeastTargetedForPoison(summit.beast.token_id, targetedPoisonBeasts);
     if (isBeastTarget) {
@@ -401,7 +405,7 @@ export function useAutopilotOrchestrator() {
       poisonedTokenIdRef.current = summit.beast.token_id;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [summit?.beast?.token_id, autopilotEnabled, targetedPoisonPlayers, targetedPoisonBeasts, poisonTotalMax]);
+  }, [summit?.beast?.token_id, autopilotEnabled, targetedPoisonPlayers, targetedPoisonBeasts, poisonTotalMax, ignoredPlayers]);
 
   // Main autopilot attack + conservative poison + extra life logic
   useEffect(() => {
@@ -460,7 +464,7 @@ export function useAutopilotOrchestrator() {
       executeGameAction({
         type: 'attack',
         beasts: beasts.map((beast: Beast) => ([beast, 1, beast.combat?.attackPotions || 0])),
-        safeAttack: false,
+        safeAttack: ignoredPlayers.length > 0,
         vrf: true,
         extraLifePotions: extraLifePotions,
         attackPotions: beasts[0]?.combat?.attackPotions || 0
@@ -516,7 +520,7 @@ export function useAutopilotOrchestrator() {
     executeGameAction({
       type: 'attack',
       beasts: [[best, 1, 0]],
-      safeAttack: false,
+      safeAttack: ignoredPlayers.length > 0,
       vrf: best.luck > 0 || (summit.beast.luck > 0),
       extraLifePotions: 0,
       attackPotions: 0,

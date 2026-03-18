@@ -120,6 +120,7 @@ export type AttackGameAction = BaseGameAction & {
 export type AttackUntilCaptureGameAction = BaseGameAction & {
   type: "attack_until_capture";
   beasts: selection;
+  safeAttack?: boolean;
   extraLifePotions: number;
 };
 
