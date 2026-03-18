@@ -88,10 +88,20 @@ export function useAutopilotOrchestrator() {
       const counterPicked = rotationPool.filter((b) => b.type === strongType);
       const candidates = counterPicked.length > 0 ? counterPicked : rotationPool;
 
-      const reviveBudget = useRevivePotions ? revivePotionMax - revivePotionsUsed : 0;
-      const attackBudget = useAttackPotions ? attackPotionMax - attackPotionsUsed : 0;
+      const reviveBudget = useRevivePotions ? Math.max(0, revivePotionMax - revivePotionsUsed) : 0;
+      const attackBudget = useAttackPotions ? Math.max(0, attackPotionMax - attackPotionsUsed) : 0;
 
-      return candidates.map((beast) => {
+      // Build quest predicates for prioritization
+      const questPredicates = questMode
+        ? questFilters.map(questNeedsPredicate).filter((p): p is (b: Beast) => boolean => p !== null)
+        : [];
+      const needsAnyQuest = (b: Beast) => questPredicates.length > 0 && questPredicates.some((p) => p(b));
+      const hasCaptureQuest = questMode && questFilters.some(f => f === 'take_summit' || f === 'hold_summit_10s');
+
+      // Damage needed to solo-kill the summit beast (through all extra lives)
+      const totalSummitHealth = ((summit.beast.health + summit.beast.bonus_health) * summit.beast.extra_lives) + summit.beast.current_health;
+
+      const enriched = candidates.map((beast) => {
         const b = { ...beast };
         b.revival_time = getBeastRevivalTime(b);
         b.current_health = getBeastCurrentHealth(beast);
@@ -105,16 +115,43 @@ export function useAutopilotOrchestrator() {
           b.combat = baseCombat;
         }
         return b;
-      }).filter((b) => {
-        if (isBeastLocked(b)) return false;
-        // Enforce per-beast revive limit for dead beasts
+      }).filter((b) => !isBeastLocked(b))
+        .sort((a, b) => {
+          if (questPredicates.length > 0) {
+            const aNeeds = needsAnyQuest(a);
+            const bNeeds = needsAnyQuest(b);
+            const aDmg = a.combat?.estimatedDamage ?? 0;
+            const bDmg = b.combat?.estimatedDamage ?? 0;
+
+            if (aNeeds && !bNeeds) {
+              // For capture quests, only prioritise if the quest beast can solo
+              if (hasCaptureQuest && aDmg < totalSummitHealth) return 1;
+              return -1;
+            }
+            if (bNeeds && !aNeeds) {
+              if (hasCaptureQuest && bDmg < totalSummitHealth) return -1;
+              return 1;
+            }
+          }
+          return (b.combat?.estimatedDamage ?? 0) - (a.combat?.estimatedDamage ?? 0);
+        });
+
+      // Minimum damage to be worth reviving: at least 10% of summit health
+      const minReviveDamage = totalSummitHealth * 0.1;
+
+      // Track cumulative revive budget across all selected beasts
+      let remainingReviveBudget = reviveBudget;
+      return enriched.filter((b) => {
         if (b.current_health === 0) {
           if (!useRevivePotions) return false;
           const reviveCost = b.revival_count + 1;
-          if (reviveCost > revivePotionMaxPerBeast || reviveCost > reviveBudget) return false;
+          if (reviveCost > revivePotionMaxPerBeast || reviveCost > remainingReviveBudget) return false;
+          // Don't waste revives on beasts that can't contribute meaningful damage
+          if ((b.combat?.estimatedDamage ?? 0) < minReviveDamage) return false;
+          remainingReviveBudget -= reviveCost;
         }
         return true;
-      }).sort((a, b) => (b.combat?.estimatedDamage ?? 0) - (a.combat?.estimatedDamage ?? 0));
+      });
     }
 
     return selectOptimalBeasts(collection, summit, {
