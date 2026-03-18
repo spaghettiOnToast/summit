@@ -64,7 +64,7 @@ function Leaderboard() {
 
         // Add top 5 leaderboard addresses
         data.slice(0, 5).forEach(player => {
-          addressesToLookup.push(player.owner);
+          if (player.owner) addressesToLookup.push(player.owner);
         });
 
         // Add summit owner if exists
@@ -116,7 +116,7 @@ function Leaderboard() {
     const diplomacyRewards = diplomacyRewardPerSecond * secondsHeld * diplomacyCount;
 
     // Find summit owner in leaderboard
-    const player = leaderboard.find(player => addAddressPadding(player.owner) === addAddressPadding(summitOwner))
+    const player = leaderboard.find(player => player.owner && addAddressPadding(player.owner) === addAddressPadding(summitOwner))
     const gainedSince = (secondsHeld * SUMMIT_REWARDS_PER_SECOND) - diplomacyRewards;
     const score = (player?.amount || 0) + gainedSince;
 

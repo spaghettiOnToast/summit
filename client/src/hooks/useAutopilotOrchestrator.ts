@@ -88,10 +88,16 @@ export function useAutopilotOrchestrator() {
       const counterPicked = rotationPool.filter((b) => b.type === strongType);
       const candidates = counterPicked.length > 0 ? counterPicked : rotationPool;
 
-      const reviveBudget = useRevivePotions ? revivePotionMax - revivePotionsUsed : 0;
-      const attackBudget = useAttackPotions ? attackPotionMax - attackPotionsUsed : 0;
+      const reviveBudget = useRevivePotions ? Math.max(0, revivePotionMax - revivePotionsUsed) : 0;
+      const attackBudget = useAttackPotions ? Math.max(0, attackPotionMax - attackPotionsUsed) : 0;
 
-      return candidates.map((beast) => {
+      // Build quest predicates for prioritization
+      const questPredicates = questMode
+        ? questFilters.map(questNeedsPredicate).filter((p): p is (b: Beast) => boolean => p !== null)
+        : [];
+      const needsAnyQuest = (b: Beast) => questPredicates.length > 0 && questPredicates.some((p) => p(b));
+
+      const enriched = candidates.map((beast) => {
         const b = { ...beast };
         b.revival_time = getBeastRevivalTime(b);
         b.current_health = getBeastCurrentHealth(beast);
@@ -105,16 +111,30 @@ export function useAutopilotOrchestrator() {
           b.combat = baseCombat;
         }
         return b;
-      }).filter((b) => {
-        if (isBeastLocked(b)) return false;
-        // Enforce per-beast revive limit for dead beasts
+      }).filter((b) => !isBeastLocked(b))
+        .sort((a, b) => {
+          // Quest-aware sort: beasts needing quests go first so they capture
+          // the summit (contract processes beasts in order, first to kill captures)
+          if (questPredicates.length > 0) {
+            const aNeeds = needsAnyQuest(a);
+            const bNeeds = needsAnyQuest(b);
+            if (aNeeds && !bNeeds) return -1;
+            if (bNeeds && !aNeeds) return 1;
+          }
+          return (b.combat?.estimatedDamage ?? 0) - (a.combat?.estimatedDamage ?? 0);
+        });
+
+      // Track cumulative revive budget across all selected beasts
+      let remainingReviveBudget = reviveBudget;
+      return enriched.filter((b) => {
         if (b.current_health === 0) {
           if (!useRevivePotions) return false;
           const reviveCost = b.revival_count + 1;
-          if (reviveCost > revivePotionMaxPerBeast || reviveCost > reviveBudget) return false;
+          if (reviveCost > revivePotionMaxPerBeast || reviveCost > remainingReviveBudget) return false;
+          remainingReviveBudget -= reviveCost;
         }
         return true;
-      }).sort((a, b) => (b.combat?.estimatedDamage ?? 0) - (a.combat?.estimatedDamage ?? 0));
+      });
     }
 
     return selectOptimalBeasts(collection, summit, {
