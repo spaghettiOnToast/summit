@@ -89,6 +89,7 @@ const POISON_OPTIONS: {
 
 const QUEST_OPTIONS: { id: string; label: string; description: string }[] = [
   { id: 'attack_summit', label: 'First Blood', description: 'Prioritize beasts that have never attacked the Summit.' },
+  { id: 'preserve_streak', label: 'Preserve Streaks', description: 'Prioritize beasts with active streaks about to expire (closest to 48h reset first).' },
   { id: 'max_attack_streak', label: 'Consistency is Key', description: 'Prioritize beasts whose streak is closest to expiring.' },
   { id: 'take_summit', label: 'Summit Conqueror', description: 'Prioritize beasts that haven\'t captured the Summit.' },
   { id: 'hold_summit_10s', label: 'Iron Grip', description: 'Prioritize beasts that haven\'t held the Summit for 10 seconds.' },

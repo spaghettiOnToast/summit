@@ -490,7 +490,7 @@ export function selectOptimalBeasts(
 
   // Sort both by combat score desc, with quest-needing beasts boosted
   const hasUrgencyQuest = config.questMode && config.questFilters.some(f =>
-    f === 'max_attack_streak' || f === 'level_up_3' || f === 'level_up_5' || f === 'level_up_10'
+    f === 'preserve_streak' || f === 'max_attack_streak' || f === 'level_up_3' || f === 'level_up_5' || f === 'level_up_10'
   );
   const sortWithQuestBoost = (a: Beast, b: Beast) => {
     if (questPredicates.length > 0) {
@@ -698,6 +698,12 @@ export function selectOptimalBeasts(
 export function questNeedsPredicate(quest: string): ((beast: Beast) => boolean) | null {
   switch (quest) {
     case 'attack_summit': return (b) => b.bonus_xp === 0;
+    case 'preserve_streak': return (b) => {
+      if (b.attack_streak === 0) return false;
+      const now = Date.now() / 1000;
+      const timeUntilReset = (b.last_death_timestamp + STREAK_RESET_SECONDS) - now;
+      return timeUntilReset > 0; // has active streak that hasn't expired
+    };
     case 'max_attack_streak': return (b) => !b.max_attack_streak;
     case 'take_summit': return (b) => !b.captured_summit;
     case 'hold_summit_10s': return (b) => b.summit_held_seconds < 10;
@@ -755,7 +761,7 @@ export function levelUrgencyScore(beast: Beast, targetLevels: number): number {
 export function questUrgencyScore(beast: Beast, questFilters: string[]): number {
   let maxScore = 0;
   for (const quest of questFilters) {
-    if (quest === 'max_attack_streak') {
+    if (quest === 'preserve_streak' || quest === 'max_attack_streak') {
       maxScore = Math.max(maxScore, streakUrgencyScore(beast));
     } else if (quest === 'level_up_3') {
       maxScore = Math.max(maxScore, levelUrgencyScore(beast, 3));
